@@ -274,6 +274,15 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
+        status_bar = QtWidgets.QHBoxLayout()
+        self.connection_status_label = QtWidgets.QLabel("Status: Disconnected")
+        self.connection_status_label.setProperty("status", "idle")
+        self.trading_status_label = QtWidgets.QLabel("Auto-trading: Off")
+        self.trading_status_label.setProperty("status", "idle")
+        status_bar.addWidget(self.connection_status_label)
+        status_bar.addStretch()
+        status_bar.addWidget(self.trading_status_label)
+
         creds_group = QtWidgets.QGroupBox("API Keys")
         creds_layout = QtWidgets.QGridLayout(creds_group)
         creds_layout.setHorizontalSpacing(8)
@@ -413,6 +422,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
 
+        layout.addLayout(status_bar)
         layout.addWidget(creds_group)
         layout.addWidget(controls_group)
         layout.addWidget(self.symbol_table)
@@ -455,6 +465,9 @@ class TradingApp(QtWidgets.QMainWindow):
             """
             QMainWindow { background: #0b0f1a; }
             QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
+            QLabel[status="idle"] { color: #94a3b8; }
+            QLabel[status="ok"] { color: #22c55e; }
+            QLabel[status="warn"] { color: #f59e0b; }
             QGroupBox { border: 1px solid #202634; border-radius: 10px; margin-top: 10px; background: #0f1422; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #8b949e; }
             QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1f6feb); color: white; border-radius: 8px; padding: 6px 14px; }
@@ -465,6 +478,9 @@ class TradingApp(QtWidgets.QMainWindow):
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; }
             QHeaderView::section { background: #0f172a; color: #94a3b8; padding: 4px; border: none; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 8px; }
+            QTabWidget::pane { border: none; }
+            QTabBar::tab { background: #0f172a; color: #94a3b8; padding: 6px 12px; border-radius: 8px; margin-right: 6px; }
+            QTabBar::tab:selected { background: #1f2937; color: #e6edf3; }
             """
         )
 
@@ -518,17 +534,26 @@ class TradingApp(QtWidgets.QMainWindow):
         base_url = self.api_base_url_input.text().strip() or "https://api.bybit.com"
         if not api_key or not api_secret:
             logging.error("API key/secret required to connect.")
+            self.connection_status_label.setText("Status: Missing credentials")
+            self.connection_status_label.setProperty("status", "warn")
+            self.connection_status_label.style().polish(self.connection_status_label)
             return
         self.client = BybitRestClient(api_key, api_secret, base_url)
         self.connected = True
         self.position_mode_detected = self._detect_position_mode()
         logging.info("Connected to Bybit futures API at %s", base_url)
+        self.connection_status_label.setText("Status: Connected")
+        self.connection_status_label.setProperty("status", "ok")
+        self.connection_status_label.style().polish(self.connection_status_label)
 
     def _disconnect(self) -> None:
         self.client = None
         self.connected = False
         self.position_mode_detected = None
         logging.info("Disconnected from Bybit futures API")
+        self.connection_status_label.setText("Status: Disconnected")
+        self.connection_status_label.setProperty("status", "idle")
+        self.connection_status_label.style().polish(self.connection_status_label)
 
     def _toggle_auto_trading(self, enabled: bool) -> None:
         if enabled:
@@ -536,10 +561,16 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.info("Auto trading enabled")
             self._log_strategy_overview()
             self.trading_timer.start()
+            self.trading_status_label.setText("Auto-trading: On")
+            self.trading_status_label.setProperty("status", "ok")
+            self.trading_status_label.style().polish(self.trading_status_label)
         else:
             self.auto_trading_toggle.setText("Start Auto Trading")
             logging.info("Auto trading disabled")
             self.trading_timer.stop()
+            self.trading_status_label.setText("Auto-trading: Off")
+            self.trading_status_label.setProperty("status", "idle")
+            self.trading_status_label.style().polish(self.trading_status_label)
 
     def _log_strategy_overview(self) -> None:
         logging.info(
