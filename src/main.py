@@ -288,22 +288,47 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
-        status_bar = QtWidgets.QHBoxLayout()
-        self.connection_status_label = QtWidgets.QLabel("Status: Disconnected")
+        header = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("Bybit Futures HFT Suite")
+        title.setProperty("role", "title")
+        subtitle = QtWidgets.QLabel("Adaptive market maker • Momentum overlay")
+        subtitle.setProperty("role", "subtitle")
+        title_wrap = QtWidgets.QVBoxLayout()
+        title_wrap.addWidget(title)
+        title_wrap.addWidget(subtitle)
+
+        self.connection_status_label = QtWidgets.QLabel("Disconnected")
         self.connection_status_label.setProperty("status", "idle")
-        self.trading_status_label = QtWidgets.QLabel("Auto-trading: Off")
+        self.trading_status_label = QtWidgets.QLabel("Auto-trading Off")
         self.trading_status_label.setProperty("status", "idle")
-        status_bar.addWidget(self.connection_status_label)
-        status_bar.addStretch()
-        status_bar.addWidget(self.trading_status_label)
+        status_wrap = QtWidgets.QVBoxLayout()
+        status_wrap.addWidget(self.connection_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+        status_wrap.addWidget(self.trading_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
-        creds_group = QtWidgets.QGroupBox("API Keys")
+        header.addLayout(title_wrap)
+        header.addStretch()
+        header.addLayout(status_wrap)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        right_panel = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        creds_group = QtWidgets.QGroupBox("Credentials")
+        creds_group.setProperty("card", "true")
         creds_layout = QtWidgets.QGridLayout(creds_group)
-        creds_layout.setHorizontalSpacing(8)
-        creds_layout.setVerticalSpacing(6)
+        creds_layout.setHorizontalSpacing(10)
+        creds_layout.setVerticalSpacing(8)
 
         self.api_key_input = QtWidgets.QLineEdit()
         self.api_secret_input = QtWidgets.QLineEdit()
@@ -320,9 +345,10 @@ class TradingApp(QtWidgets.QMainWindow):
         creds_layout.addWidget(self.auto_save_checkbox, 3, 0, 1, 2)
 
         controls_group = QtWidgets.QGroupBox("Trading Controls")
+        controls_group.setProperty("card", "true")
         controls_layout = QtWidgets.QGridLayout(controls_group)
-        controls_layout.setHorizontalSpacing(8)
-        controls_layout.setVerticalSpacing(6)
+        controls_layout.setHorizontalSpacing(10)
+        controls_layout.setVerticalSpacing(8)
 
         self.connect_button = QtWidgets.QPushButton("Connect")
         self.disconnect_button = QtWidgets.QPushButton("Disconnect")
@@ -444,6 +470,16 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(QtWidgets.QLabel("Refresh"), 6, 3)
         controls_layout.addWidget(self.auto_select_interval, 6, 4)
 
+        universe_group = QtWidgets.QGroupBox("Universe & Selection")
+        universe_group.setProperty("card", "true")
+        universe_layout = QtWidgets.QVBoxLayout(universe_group)
+        universe_layout.setSpacing(8)
+
+        universe_toolbar = QtWidgets.QHBoxLayout()
+        self.auto_select_button = QtWidgets.QPushButton("Refresh symbols")
+        universe_toolbar.addWidget(self.auto_select_button)
+        universe_toolbar.addStretch()
+
         self.symbol_table = QtWidgets.QTableWidget(0, 6)
         self.symbol_table.setHorizontalHeaderLabels(
             ["Symbol", "Volume $", "Volatility", "Imbalance", "24h %", "Score"]
@@ -451,26 +487,37 @@ class TradingApp(QtWidgets.QMainWindow):
         self.symbol_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
         )
-        self.symbol_table.setMinimumHeight(140)
-
-        self.auto_select_button = QtWidgets.QPushButton("Refresh symbols")
+        self.symbol_table.setMinimumHeight(220)
 
         self.symbol_list = QtWidgets.QListWidget()
         self.symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
-        self.symbol_list.setMinimumHeight(100)
+        self.symbol_list.setMinimumHeight(120)
 
+        universe_layout.addLayout(universe_toolbar)
+        universe_layout.addWidget(self.symbol_table)
+        universe_layout.addWidget(QtWidgets.QLabel("Active symbols"))
+        universe_layout.addWidget(self.symbol_list)
+
+        log_group = QtWidgets.QGroupBox("Live Log")
+        log_group.setProperty("card", "true")
+        log_layout = QtWidgets.QVBoxLayout(log_group)
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
+        log_layout.addWidget(self.log_output)
 
-        layout.addLayout(status_bar)
-        layout.addWidget(creds_group)
-        layout.addWidget(controls_group)
-        layout.addWidget(self.symbol_table)
-        layout.addWidget(self.auto_select_button)
-        layout.addWidget(QtWidgets.QLabel("Active symbols"))
-        layout.addWidget(self.symbol_list)
-        layout.addWidget(QtWidgets.QLabel("Live Log"))
-        layout.addWidget(self.log_output)
+        left_layout.addWidget(creds_group)
+        left_layout.addWidget(controls_group)
+        left_layout.addStretch()
+
+        right_layout.addWidget(universe_group)
+        right_layout.addWidget(log_group)
+
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([420, 560])
+
+        layout.addLayout(header)
+        layout.addWidget(splitter)
 
     def _setup_backtest_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.backtest_tab)
@@ -505,21 +552,24 @@ class TradingApp(QtWidgets.QMainWindow):
             """
             QMainWindow { background: #0b0f1a; }
             QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
+            QLabel[role="title"] { font-size: 18px; font-weight: 600; color: #f8fafc; }
+            QLabel[role="subtitle"] { font-size: 11px; color: #94a3b8; }
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #202634; border-radius: 10px; margin-top: 10px; background: #0f1422; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #8b949e; }
-            QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1f6feb); color: white; border-radius: 8px; padding: 6px 14px; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 8px; background: #0f1422; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #94a3b8; }
+            QGroupBox[card="true"] { background: #0f172a; }
+            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 16px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 5px; border-radius: 7px; }
-            QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 8px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; }
+            QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; }
-            QHeaderView::section { background: #0f172a; color: #94a3b8; padding: 4px; border: none; }
-            QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 8px; }
+            QHeaderView::section { background: #111827; color: #94a3b8; padding: 6px; border: none; }
+            QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
-            QTabBar::tab { background: #0f172a; color: #94a3b8; padding: 6px 12px; border-radius: 8px; margin-right: 6px; }
+            QTabBar::tab { background: #111827; color: #94a3b8; padding: 7px 14px; border-radius: 10px; margin-right: 6px; }
             QTabBar::tab:selected { background: #1f2937; color: #e6edf3; }
             """
         )
