@@ -1200,6 +1200,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
 
     def _monitor_positions_for_exit(self) -> None:
+        if not self.auto_trading_toggle.isChecked():
+            return
         taker_fee = self.strategy.taker_fee
         tp_pct = self.tp_input.value() / 100
         sl_pct = self.sl_input.value() / 100
@@ -1386,6 +1388,9 @@ class TradingApp(QtWidgets.QMainWindow):
         return sum(1 for pos in self.positions.values() if pos.qty != 0)
 
     def _place_order(self, symbol: str, side: str, qty: float, price: Optional[float] = None) -> None:
+        if not self.auto_trading_toggle.isChecked():
+            logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
+            return
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
