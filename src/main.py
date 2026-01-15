@@ -744,24 +744,42 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
         position_idx = self._resolve_position_idx(side)
-        if position_idx is None:
-            logging.error("Order blocked: could not resolve position mode (check settings).")
-            return
         try:
-            response = self.client.create_order(
-                symbol=symbol,
-                side=side,
-                qty=normalized_qty,
-                position_idx=position_idx,
-            )
+            response = self._send_order(symbol, side, normalized_qty, position_idx)
+            if self._is_position_mode_error(response):
+                fallback_idx = 0 if position_idx in (1, 2) else (1 if side == "Buy" else 2)
+                logging.warning(
+                    "Position mode mismatch; retrying with positionIdx=%s", fallback_idx
+                )
+                response = self._send_order(symbol, side, normalized_qty, fallback_idx)
+                if self._is_position_mode_error(response):
+                    logging.error(
+                        "Order rejected after retry: %s %s %.6f -> %s",
+                        side,
+                        symbol,
+                        normalized_qty,
+                        response,
+                    )
+                    return
             ret_code = response.get("retCode")
-            ret_msg = response.get("retMsg")
             if ret_code != 0:
                 logging.error("Order rejected: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
                 return
             logging.info("Order sent: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
+
+    def _send_order(self, symbol: str, side: str, qty: float, position_idx: int) -> dict:
+        return self.client.create_order(
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            position_idx=position_idx,
+        )
+
+    def _is_position_mode_error(self, response: dict) -> bool:
+        ret_msg = str(response.get("retMsg", "")).lower()
+        return response.get("retCode") == 10001 and "position idx not match position mode" in ret_msg
 
     def _resolve_position_idx(self, side: str) -> Optional[int]:
         selection = self.position_mode_input.currentIndex()
