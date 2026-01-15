@@ -177,6 +177,24 @@ class BybitRestClient:
                 return "hedge"
         return "one-way"
 
+    def fetch_instruments_specs(self) -> dict:
+        endpoint = "/v5/market/instruments-info"
+        params = {"category": "linear"}
+        response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return {}
+        specs = {}
+        for item in payload.get("result", {}).get("list", []):
+            symbol = item.get("symbol")
+            lot_filter = item.get("lotSizeFilter", {})
+            min_qty = float(lot_filter.get("minOrderQty", 0) or 0)
+            step = float(lot_filter.get("qtyStep", 0) or 0)
+            if symbol and min_qty > 0 and step > 0:
+                specs[symbol] = {"min_qty": min_qty, "step": step}
+        return specs
+
 class QtLogHandler(logging.Handler):
     def __init__(self, widget: QtWidgets.QTextEdit) -> None:
         super().__init__()
@@ -239,6 +257,20 @@ class TickerThread(QtCore.QThread):
         except Exception as exc:  # noqa: BLE001
             self.finished.emit([], {}, exc)
 
+
+class InstrumentThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(dict, object)
+
+    def __init__(self, client: BybitRestClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            specs = self.client.fetch_instruments_specs()
+            self.finished.emit(specs, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit({}, exc)
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -317,6 +349,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.limit_shift_attempts: Dict[tuple, int] = {}
         self.order_threads: List[OrderThread] = []
         self.ticker_thread: Optional[TickerThread] = None
+        self.instrument_thread: Optional[InstrumentThread] = None
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
         self.symbol_specs = {
@@ -758,6 +791,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.connected = True
         self.position_mode_detected = self._detect_position_mode()
         self._request_tickers()
+        self._request_instruments()
         logging.info("Connected to Bybit futures API at %s", base_url)
         self.connection_status_label.setText("Status: Connected")
         self.connection_status_label.setProperty("status", "ok")
@@ -769,6 +803,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_detected = None
         self.ticker_symbols = []
         self.ticker_change_map = {}
+        if self.instrument_thread and self.instrument_thread.isRunning():
+            self.instrument_thread.quit()
+        self.instrument_thread = None
         logging.info("Disconnected from Bybit futures API")
         self.connection_status_label.setText("Status: Disconnected")
         self.connection_status_label.setProperty("status", "idle")
@@ -877,6 +914,20 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_thread = TickerThread(self.client)
         self.ticker_thread.finished.connect(self._on_tickers_ready)
         self.ticker_thread.start()
+
+    def _request_instruments(self) -> None:
+        if not self.client or (self.instrument_thread and self.instrument_thread.isRunning()):
+            return
+        self.instrument_thread = InstrumentThread(self.client)
+        self.instrument_thread.finished.connect(self._on_instruments_ready)
+        self.instrument_thread.start()
+
+    def _on_instruments_ready(self, specs: dict, error: object) -> None:
+        if error:
+            logging.error("Failed to fetch instrument specs: %s", error)
+            return
+        if specs:
+            self.symbol_specs.update(specs)
 
     def _on_tickers_ready(self, symbols: list, change_map: dict, error: object) -> None:
         if error:
@@ -1151,6 +1202,8 @@ class TradingApp(QtWidgets.QMainWindow):
         specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001})
         step = specs["step"]
         min_qty = specs["min_qty"]
+        if step <= 0 or min_qty <= 0:
+            return None
         normalized = (qty // step) * step
         normalized = round(normalized, 6)
         if normalized < min_qty:
