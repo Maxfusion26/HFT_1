@@ -551,6 +551,10 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout = QtWidgets.QGridLayout(controls_group)
         controls_layout.setHorizontalSpacing(10)
         controls_layout.setVerticalSpacing(8)
+        controls_layout.setColumnStretch(1, 1)
+        controls_layout.setColumnStretch(3, 1)
+        controls_layout.setColumnStretch(5, 1)
+        controls_layout.setColumnStretch(6, 1)
 
         self.connect_button = QtWidgets.QPushButton("Connect")
         self.disconnect_button = QtWidgets.QPushButton("Disconnect")
@@ -690,6 +694,11 @@ class TradingApp(QtWidgets.QMainWindow):
         self.symbol_table.setHorizontalHeaderLabels(
             ["Symbol", "Volume $", "Volatility", "Imbalance", "24h %", "Score"]
         )
+        self.symbol_table.verticalHeader().setVisible(False)
+        self.symbol_table.setAlternatingRowColors(True)
+        self.symbol_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self.symbol_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
         )
@@ -792,6 +801,11 @@ class TradingApp(QtWidgets.QMainWindow):
                 "SL Loss (USDT)",
             ]
         )
+        self.positions_table.verticalHeader().setVisible(False)
+        self.positions_table.setAlternatingRowColors(True)
+        self.positions_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self.positions_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
         )
@@ -805,24 +819,25 @@ class TradingApp(QtWidgets.QMainWindow):
             """
             QMainWindow { background: #0b0f1a; }
             QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
-            QLabel[role="title"] { font-size: 18px; font-weight: 600; color: #f8fafc; }
+            QLabel[role="title"] { font-size: 18px; font-weight: 600; color: #f8fafc; letter-spacing: 0.2px; }
             QLabel[role="subtitle"] { font-size: 11px; color: #94a3b8; }
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 8px; background: #0f1422; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #94a3b8; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 10px; background: #0f1422; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; font-weight: 600; }
             QGroupBox[card="true"] { background: #0f172a; }
             QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 16px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
             QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; }
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
-            QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; }
-            QHeaderView::section { background: #111827; color: #94a3b8; padding: 6px; border: none; }
+            QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; alternate-background-color: #0f172a; }
+            QTableWidget::item { padding: 4px; }
+            QHeaderView::section { background: #111827; color: #94a3b8; padding: 7px; border: none; font-weight: 600; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
-            QTabBar::tab { background: #111827; color: #94a3b8; padding: 7px 14px; border-radius: 10px; margin-right: 6px; }
+            QTabBar::tab { background: #111827; color: #94a3b8; padding: 7px 14px; border-radius: 10px; margin-right: 6px; min-width: 120px; }
             QTabBar::tab:selected { background: #1f2937; color: #e6edf3; }
             """
         )
