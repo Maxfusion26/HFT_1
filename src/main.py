@@ -1182,6 +1182,10 @@ class TradingApp(QtWidgets.QMainWindow):
         )
 
     def _render_portfolio_table(self) -> None:
+        self.positions_table.setColumnCount(6)
+        self.positions_table.setHorizontalHeaderLabels(
+            ["Symbol", "Side", "Size", "Entry", "Unrealized PnL", "TP Price"]
+        )
         self.positions_table.setRowCount(len(self.open_positions))
         tp_pct = self.tp_input.value() / 100
         for row, position in enumerate(self.open_positions):
