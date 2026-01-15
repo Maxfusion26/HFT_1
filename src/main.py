@@ -199,6 +199,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.backtest_engine = BacktestEngine(self.strategy)
         self.client: Optional[BybitRestClient] = None
         self.connected = False
+        self.symbol_specs = {
+            "BTCUSDT": {"min_qty": 0.001, "step": 0.001},
+            "ETHUSDT": {"min_qty": 0.01, "step": 0.01},
+            "BNBUSDT": {"min_qty": 0.1, "step": 0.1},
+            "SOLUSDT": {"min_qty": 0.1, "step": 0.1},
+            "XRPUSDT": {"min_qty": 1.0, "step": 1.0},
+        }
         self.positions: Dict[str, PositionState] = {}
         self.symbol_metrics: List[SymbolMetrics] = []
         self.trading_timer = QtCore.QTimer(self)
@@ -396,17 +403,18 @@ class TradingApp(QtWidgets.QMainWindow):
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow { background: #0f1115; }
-            QLabel, QCheckBox { color: #e4e6eb; font-size: 13px; }
-            QGroupBox { border: 1px solid #2b2f36; border-radius: 8px; margin-top: 12px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #9aa4b2; }
-            QPushButton { background: #1f6feb; color: white; border-radius: 8px; padding: 8px 16px; }
-            QPushButton:checked { background: #3fb950; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #151922; color: #e4e6eb; border: 1px solid #2b2f36; padding: 6px; border-radius: 6px; }
-            QTextEdit { background: #11151d; color: #c9d1d9; border: 1px solid #2b2f36; border-radius: 8px; }
-            QTableWidget { background: #11151d; color: #c9d1d9; border: 1px solid #2b2f36; }
-            QHeaderView::section { background: #151922; color: #9aa4b2; }
-            QListWidget { background: #11151d; color: #c9d1d9; border: 1px solid #2b2f36; border-radius: 8px; }
+            QMainWindow { background: #0b0f1a; }
+            QLabel, QCheckBox { color: #e6edf3; font-size: 13px; }
+            QGroupBox { border: 1px solid #202634; border-radius: 12px; margin-top: 14px; background: #0f1422; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #8b949e; }
+            QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1f6feb); color: white; border-radius: 10px; padding: 8px 18px; }
+            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
+            QPushButton:checked { background: #22c55e; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 7px; border-radius: 8px; }
+            QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
+            QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; }
+            QHeaderView::section { background: #0f172a; color: #94a3b8; padding: 6px; border: none; }
+            QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             """
         )
 
@@ -679,16 +687,30 @@ class TradingApp(QtWidgets.QMainWindow):
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
+        normalized_qty = self._normalize_qty(symbol, qty)
+        if normalized_qty is None:
+            logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
+            return
         try:
-            response = self.client.create_order(symbol=symbol, side=side, qty=qty)
+            response = self.client.create_order(symbol=symbol, side=side, qty=normalized_qty)
             ret_code = response.get("retCode")
             ret_msg = response.get("retMsg")
             if ret_code != 0:
-                logging.error("Order rejected: %s %s %.6f -> %s", side, symbol, qty, response)
+                logging.error("Order rejected: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
                 return
-            logging.info("Order sent: %s %s %.6f -> %s", side, symbol, qty, response)
+            logging.info("Order sent: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
+
+    def _normalize_qty(self, symbol: str, qty: float) -> Optional[float]:
+        specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001})
+        step = specs["step"]
+        min_qty = specs["min_qty"]
+        normalized = (qty // step) * step
+        normalized = round(normalized, 6)
+        if normalized < min_qty:
+            return None
+        return normalized
 
 
 def main() -> None:
