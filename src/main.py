@@ -55,6 +55,17 @@ class PositionState:
     last_update: datetime = datetime.utcnow()
 
 
+@dataclass
+class OrderRequest:
+    symbol: str
+    side: str
+    qty: float
+    position_idx: int
+    order_type: str
+    limit_price: Optional[float]
+    retry: int = 0
+
+
 class ConfigManager:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -176,6 +187,53 @@ class QtLogHandler(logging.Handler):
         )
 
 
+class OrderThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(object, object, object)
+
+    def __init__(self, client: BybitRestClient, request: OrderRequest) -> None:
+        super().__init__()
+        self.client = client
+        self.request = request
+
+    def run(self) -> None:
+        try:
+            response = self.client.create_order(
+                symbol=self.request.symbol,
+                side=self.request.side,
+                qty=self.request.qty,
+                position_idx=self.request.position_idx,
+                order_type=self.request.order_type,
+                price=self.request.limit_price,
+            )
+            self.finished.emit(self.request, response, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit(self.request, None, exc)
+
+
+class TickerThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(list, dict, object)
+
+    def __init__(self, client: BybitRestClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            tickers = self.client.fetch_linear_tickers()
+            change_map = {}
+            symbols = []
+            for ticker in tickers:
+                symbol = ticker.get("symbol")
+                last_price = float(ticker.get("lastPrice", 0) or 0)
+                prev_price = float(ticker.get("prevPrice24h", 0) or 0)
+                if symbol:
+                    symbols.append(symbol)
+                    if prev_price > 0:
+                        change_map[symbol] = ((last_price - prev_price) / prev_price) * 100
+            self.finished.emit(symbols, change_map, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit([], {}, exc)
+
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -252,6 +310,10 @@ class TradingApp(QtWidgets.QMainWindow):
         self.connected = False
         self.position_mode_detected: Optional[str] = None
         self.limit_shift_attempts: Dict[tuple, int] = {}
+        self.order_threads: List[OrderThread] = []
+        self.ticker_thread: Optional[TickerThread] = None
+        self.ticker_symbols: List[str] = []
+        self.ticker_change_map: Dict[str, float] = {}
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01},
@@ -635,6 +697,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.client = BybitRestClient(api_key, api_secret, base_url)
         self.connected = True
         self.position_mode_detected = self._detect_position_mode()
+        self._request_tickers()
         logging.info("Connected to Bybit futures API at %s", base_url)
         self.connection_status_label.setText("Status: Connected")
         self.connection_status_label.setProperty("status", "ok")
@@ -644,6 +707,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.client = None
         self.connected = False
         self.position_mode_detected = None
+        self.ticker_symbols = []
+        self.ticker_change_map = {}
         logging.info("Disconnected from Bybit futures API")
         self.connection_status_label.setText("Status: Disconnected")
         self.connection_status_label.setProperty("status", "idle")
@@ -672,6 +737,8 @@ class TradingApp(QtWidgets.QMainWindow):
         )
 
     def _refresh_symbol_table(self) -> None:
+        if self.client and not self.ticker_symbols:
+            self._request_tickers()
         self.symbol_metrics = self._generate_symbol_metrics()
         self.symbol_metrics.sort(key=lambda item: item.change_24h, reverse=True)
 
@@ -739,24 +806,25 @@ class TradingApp(QtWidgets.QMainWindow):
         if not self.client:
             fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
             return fallback, {}
-        try:
-            tickers = self.client.fetch_linear_tickers()
-            symbols = []
-            change_map = {}
-            for ticker in tickers:
-                symbol = ticker.get("symbol")
-                last_price = float(ticker.get("lastPrice", 0) or 0)
-                prev_price = float(ticker.get("prevPrice24h", 0) or 0)
-                if symbol:
-                    symbols.append(symbol)
-                    if prev_price > 0:
-                        change_map[symbol] = ((last_price - prev_price) / prev_price) * 100
-            fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-            return (symbols if symbols else fallback, change_map)
-        except requests.RequestException as exc:
-            logging.error("Failed to fetch symbol universe: %s", exc)
-            fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-            return fallback, {}
+        if self.ticker_symbols:
+            return self.ticker_symbols, self.ticker_change_map
+        fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+        return fallback, {}
+
+    def _request_tickers(self) -> None:
+        if not self.client or (self.ticker_thread and self.ticker_thread.isRunning()):
+            return
+        self.ticker_thread = TickerThread(self.client)
+        self.ticker_thread.finished.connect(self._on_tickers_ready)
+        self.ticker_thread.start()
+
+    def _on_tickers_ready(self, symbols: list, change_map: dict, error: object) -> None:
+        if error:
+            logging.error("Failed to fetch symbol universe: %s", error)
+            return
+        self.ticker_symbols = symbols
+        self.ticker_change_map = change_map
+        self._refresh_symbol_table()
 
     def _run_backtest(self) -> None:
         steps = self.backtest_steps_input.value()
@@ -928,64 +996,64 @@ class TradingApp(QtWidgets.QMainWindow):
                     attempt,
                     limit_price,
                 )
-        try:
-            response = self._send_order(
-                symbol,
-                side,
-                normalized_qty,
-                position_idx,
-                order_type,
-                limit_price,
-            )
-            if self._is_position_mode_error(response):
-                fallback_idx = 0 if position_idx in (1, 2) else (1 if side == "Buy" else 2)
-                logging.warning(
-                    "Position mode mismatch; retrying with positionIdx=%s", fallback_idx
-                )
-                response = self._send_order(
-                    symbol,
-                    side,
-                    normalized_qty,
-                    fallback_idx,
-                    order_type,
-                    limit_price,
-                )
-                if self._is_position_mode_error(response):
-                    logging.error(
-                        "Order rejected after retry: %s %s %.6f -> %s",
-                        side,
-                        symbol,
-                        normalized_qty,
-                        response,
-                    )
-                    return
-            ret_code = response.get("retCode")
-            if ret_code != 0:
-                logging.error("Order rejected: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
-                return
-            logging.info("Order sent: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
-            if order_type == "Limit":
-                self.limit_shift_attempts.pop((symbol, side), None)
-        except requests.RequestException as exc:
-            logging.error("Order failed: %s", exc)
-
-    def _send_order(
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        position_idx: int,
-        order_type: str,
-        limit_price: Optional[float],
-    ) -> dict:
-        return self.client.create_order(
+        request = OrderRequest(
             symbol=symbol,
             side=side,
-            qty=qty,
+            qty=normalized_qty,
             position_idx=position_idx,
             order_type=order_type,
-            price=limit_price,
+            limit_price=limit_price,
         )
+        self._dispatch_order(request)
+
+    def _dispatch_order(self, request: OrderRequest) -> None:
+        if not self.client:
+            return
+        thread = OrderThread(self.client, request)
+        thread.finished.connect(self._on_order_finished)
+        self.order_threads.append(thread)
+        thread.start()
+
+    def _on_order_finished(self, request: OrderRequest, response: Optional[dict], error: object) -> None:
+        if error:
+            logging.error("Order failed: %s", error)
+            return
+        if response is None:
+            logging.error("Order failed: empty response.")
+            return
+        if self._is_position_mode_error(response) and request.retry == 0:
+            fallback_idx = 0 if request.position_idx in (1, 2) else (1 if request.side == "Buy" else 2)
+            logging.warning("Position mode mismatch; retrying with positionIdx=%s", fallback_idx)
+            retry_request = OrderRequest(
+                symbol=request.symbol,
+                side=request.side,
+                qty=request.qty,
+                position_idx=fallback_idx,
+                order_type=request.order_type,
+                limit_price=request.limit_price,
+                retry=1,
+            )
+            self._dispatch_order(retry_request)
+            return
+        ret_code = response.get("retCode")
+        if ret_code != 0:
+            logging.error(
+                "Order rejected: %s %s %.6f -> %s",
+                request.side,
+                request.symbol,
+                request.qty,
+                response,
+            )
+            return
+        logging.info(
+            "Order sent: %s %s %.6f -> %s",
+            request.side,
+            request.symbol,
+            request.qty,
+            response,
+        )
+        if request.order_type == "Limit":
+            self.limit_shift_attempts.pop((request.symbol, request.side), None)
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
