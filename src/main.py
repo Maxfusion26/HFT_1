@@ -355,6 +355,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.instrument_thread: Optional[InstrumentThread] = None
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
+        self.selected_symbols: List[str] = []
+        self._updating_symbol_list = False
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 0.0},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 0.0},
@@ -486,13 +488,11 @@ class TradingApp(QtWidgets.QMainWindow):
         self.shift_bps_input.setSuffix(" %")
 
         self.top_n_input = QtWidgets.QSpinBox()
-        self.top_n_input.setRange(5, 5)
+        self.top_n_input.setRange(1, 20)
         self.top_n_input.setValue(5)
-        self.top_n_input.setEnabled(False)
 
         self.auto_select_checkbox = QtWidgets.QCheckBox("Auto-select top symbols")
         self.auto_select_checkbox.setChecked(True)
-        self.auto_select_checkbox.setEnabled(False)
         self.auto_select_interval = QtWidgets.QSpinBox()
         self.auto_select_interval.setRange(5, 600)
         self.auto_select_interval.setValue(60)
@@ -601,6 +601,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.symbol_list = QtWidgets.QListWidget()
         self.symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
         self.symbol_list.setMinimumHeight(120)
+        self.symbol_list.itemChanged.connect(self._on_symbol_item_changed)
 
         universe_layout.addLayout(universe_toolbar)
         universe_layout.addWidget(self.symbol_table)
@@ -711,6 +712,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.auto_shift_checkbox.setChecked(data.get("auto_shift", True))
         self.shift_bps_input.setValue(data.get("shift_bps", 0.05))
         self.position_mode_input.setCurrentText(data.get("position_mode", "Auto-detect"))
+        self.auto_select_checkbox.setChecked(data.get("auto_select", True))
+        self.selected_symbols = data.get("selected_symbols", [])
 
     def _setup_logging(self) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -783,6 +786,8 @@ class TradingApp(QtWidgets.QMainWindow):
             "position_mode": self.position_mode_input.currentText(),
             "window_geometry": self.saveGeometry().toHex().data().decode("utf-8"),
             "splitter_sizes": self.main_splitter.sizes(),
+            "auto_select": self.auto_select_checkbox.isChecked(),
+            "selected_symbols": self.selected_symbols,
         }
         self.config.save(data)
 
@@ -876,17 +881,24 @@ class TradingApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(self.auto_select_interval.value() * 1000, self._refresh_symbol_table)
 
     def _update_symbol_list(self) -> None:
+        self._updating_symbol_list = True
         self.symbol_list.clear()
         for metric in self.symbol_metrics:
             item = QtWidgets.QListWidgetItem(metric.symbol)
             item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
-            is_selected = self._is_symbol_selected(metric.symbol)
             if self.auto_select_checkbox.isChecked():
                 is_selected = metric in self.symbol_metrics[: self.top_n_input.value()]
+            else:
+                is_selected = metric.symbol in self.selected_symbols
             item.setCheckState(
                 QtCore.Qt.CheckState.Checked if is_selected else QtCore.Qt.CheckState.Unchecked
             )
             self.symbol_list.addItem(item)
+        self._updating_symbol_list = False
+        if self.auto_select_checkbox.isChecked():
+            self.selected_symbols = [
+                metric.symbol for metric in self.symbol_metrics[: self.top_n_input.value()]
+            ]
 
     def _is_symbol_selected(self, symbol: str) -> bool:
         for idx in range(self.symbol_list.count()):
@@ -894,6 +906,18 @@ class TradingApp(QtWidgets.QMainWindow):
             if item.text() == symbol and item.checkState() == QtCore.Qt.CheckState.Checked:
                 return True
         return False
+
+    def _on_symbol_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
+        if self._updating_symbol_list or self.auto_select_checkbox.isChecked():
+            return
+        symbol = item.text()
+        if item.checkState() == QtCore.Qt.CheckState.Checked:
+            if symbol not in self.selected_symbols:
+                self.selected_symbols.append(symbol)
+        else:
+            if symbol in self.selected_symbols:
+                self.selected_symbols.remove(symbol)
+        self._persist_config()
 
     def _generate_symbol_metrics(self) -> List[SymbolMetrics]:
         symbols, change_map = self._fetch_symbol_universe()
@@ -983,8 +1007,9 @@ class TradingApp(QtWidgets.QMainWindow):
             self._apply_strategy(snapshot, fee_buffer)
 
     def _get_active_symbols(self) -> List[str]:
-        top_n = 5
-        return [metric.symbol for metric in self.symbol_metrics[:top_n]]
+        if self.auto_select_checkbox.isChecked():
+            return [metric.symbol for metric in self.symbol_metrics[: self.top_n_input.value()]]
+        return [symbol for symbol in self.selected_symbols if symbol in {m.symbol for m in self.symbol_metrics}]
 
     def _simulate_market_snapshot(self, symbol: str) -> MarketSnapshot:
         base = 30000 if symbol == "BTCUSDT" else 2000 if symbol == "ETHUSDT" else 100
