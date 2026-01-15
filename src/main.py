@@ -848,7 +848,9 @@ class TradingApp(QtWidgets.QMainWindow):
             QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 16px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; min-height: 28px; }
+            QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { width: 18px; }
+            QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow { width: 10px; height: 10px; }
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; alternate-background-color: #0f172a; }
             QTableWidget::item { padding: 4px; }
