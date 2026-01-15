@@ -237,7 +237,7 @@ class OrderThread(QtCore.QThread):
 
 
 class TickerThread(QtCore.QThread):
-    finished = QtCore.pyqtSignal(list, dict, object)
+    finished = QtCore.pyqtSignal(list, dict, dict, object)
 
     def __init__(self, client: BybitRestClient) -> None:
         super().__init__()
@@ -248,17 +248,20 @@ class TickerThread(QtCore.QThread):
             tickers = self.client.fetch_linear_tickers()
             change_map = {}
             symbols = []
+            last_price_map = {}
             for ticker in tickers:
                 symbol = ticker.get("symbol")
                 last_price = float(ticker.get("lastPrice", 0) or 0)
                 prev_price = float(ticker.get("prevPrice24h", 0) or 0)
                 if symbol:
                     symbols.append(symbol)
+                    if last_price > 0:
+                        last_price_map[symbol] = last_price
                     if prev_price > 0:
                         change_map[symbol] = ((last_price - prev_price) / prev_price) * 100
-            self.finished.emit(symbols, change_map, None)
+            self.finished.emit(symbols, change_map, last_price_map, None)
         except Exception as exc:  # noqa: BLE001
-            self.finished.emit([], {}, exc)
+            self.finished.emit([], {}, {}, exc)
 
 
 class InstrumentThread(QtCore.QThread):
@@ -355,6 +358,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.instrument_thread: Optional[InstrumentThread] = None
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
+        self.ticker_last_price_map: Dict[str, float] = {}
         self.selected_symbols: List[str] = []
         self._updating_symbol_list = False
         self.symbol_specs = {
@@ -820,6 +824,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_detected = None
         self.ticker_symbols = []
         self.ticker_change_map = {}
+        self.ticker_last_price_map = {}
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
         self.instrument_thread = None
@@ -965,12 +970,13 @@ class TradingApp(QtWidgets.QMainWindow):
         if specs:
             self.symbol_specs.update(specs)
 
-    def _on_tickers_ready(self, symbols: list, change_map: dict, error: object) -> None:
+    def _on_tickers_ready(self, symbols: list, change_map: dict, last_price_map: dict, error: object) -> None:
         if error:
             logging.error("Failed to fetch symbol universe: %s", error)
             return
         self.ticker_symbols = symbols
         self.ticker_change_map = change_map
+        self.ticker_last_price_map = last_price_map
         self._refresh_symbol_table()
 
     def _run_backtest(self) -> None:
@@ -1050,8 +1056,9 @@ class TradingApp(QtWidgets.QMainWindow):
             direction = 1 if momentum > 0 else -1
             entry = snapshot.ask if direction > 0 else snapshot.bid
             desired_usdt = self.position_size_input.value()
-            raw_qty = desired_usdt / entry if entry else 0.0
-            normalized_qty = self._normalize_qty(snapshot.symbol, raw_qty, entry)
+            reference_price = self.ticker_last_price_map.get(snapshot.symbol, entry)
+            raw_qty = desired_usdt / reference_price if reference_price else 0.0
+            normalized_qty = self._normalize_qty(snapshot.symbol, raw_qty, reference_price)
             if normalized_qty is None:
                 logging.error(
                     "Order rejected locally: %s %s %.2f USDT (min notional/min qty)",
@@ -1134,7 +1141,8 @@ class TradingApp(QtWidgets.QMainWindow):
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
-        normalized_qty = self._normalize_qty(symbol, qty, price)
+        reference_price = price or self.ticker_last_price_map.get(symbol)
+        normalized_qty = self._normalize_qty(symbol, qty, reference_price)
         if normalized_qty is None:
             specs = self.symbol_specs.get(symbol, {})
             min_notional = specs.get("min_notional", 0.0)
