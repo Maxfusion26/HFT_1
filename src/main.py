@@ -1518,6 +1518,20 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         ret_code = response.get("retCode")
         if ret_code != 0:
+            if not request.reduce_only:
+                position = self.positions.get(request.symbol)
+                if position:
+                    position.qty = 0
+                    position.entry_price = 0.0
+                    position.tp_price = 0.0
+                    position.sl_price = 0.0
+                    self.positions[request.symbol] = position
+                    logging.warning(
+                        "Reset local position state after rejected entry: %s %s %.6f",
+                        request.side,
+                        request.symbol,
+                        request.qty,
+                    )
             logging.error(
                 "Order rejected: %s %s %.6f -> %s",
                 request.side,
