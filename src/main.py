@@ -26,6 +26,7 @@ class SymbolMetrics:
     volume_usd: float
     volatility: float
     imbalance: float
+    change_24h: float
 
     @property
     def score(self) -> float:
@@ -320,8 +321,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_size_input.setSuffix(" $")
 
         self.top_n_input = QtWidgets.QSpinBox()
-        self.top_n_input.setRange(1, 10)
-        self.top_n_input.setValue(3)
+        self.top_n_input.setRange(5, 5)
+        self.top_n_input.setValue(5)
+        self.top_n_input.setEnabled(False)
 
         self.auto_select_checkbox = QtWidgets.QCheckBox("Auto-select top symbols")
         self.auto_select_checkbox.setChecked(True)
@@ -398,15 +400,15 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.taker_fee_input, 4, 3)
         controls_layout.addWidget(QtWidgets.QLabel("Fee buffer"), 4, 4)
         controls_layout.addWidget(self.fee_buffer_input, 4, 5)
-        controls_layout.addWidget(QtWidgets.QLabel("Top N"), 5, 0)
+        controls_layout.addWidget(QtWidgets.QLabel("Top (24h рост)"), 5, 0)
         controls_layout.addWidget(self.top_n_input, 5, 1)
         controls_layout.addWidget(self.auto_select_checkbox, 5, 2)
         controls_layout.addWidget(QtWidgets.QLabel("Refresh"), 5, 3)
         controls_layout.addWidget(self.auto_select_interval, 5, 4)
 
-        self.symbol_table = QtWidgets.QTableWidget(0, 5)
+        self.symbol_table = QtWidgets.QTableWidget(0, 6)
         self.symbol_table.setHorizontalHeaderLabels(
-            ["Symbol", "Volume $", "Volatility", "Imbalance", "Score"]
+            ["Symbol", "Volume $", "Volatility", "Imbalance", "24h %", "Score"]
         )
         self.symbol_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
@@ -579,7 +581,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _refresh_symbol_table(self) -> None:
         self.symbol_metrics = self._generate_symbol_metrics()
-        self.symbol_metrics.sort(key=lambda item: item.score, reverse=True)
+        self.symbol_metrics.sort(key=lambda item: item.change_24h, reverse=True)
 
         self.symbol_table.setRowCount(len(self.symbol_metrics))
         for row, metric in enumerate(self.symbol_metrics):
@@ -587,7 +589,8 @@ class TradingApp(QtWidgets.QMainWindow):
             self.symbol_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{metric.volume_usd:,.0f}"))
             self.symbol_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{metric.volatility:.3f}"))
             self.symbol_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{metric.imbalance:.3f}"))
-            self.symbol_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{metric.score:,.2f}"))
+            self.symbol_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{metric.change_24h:.2f}%"))
+            self.symbol_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{metric.score:,.2f}"))
         self._update_symbol_list()
         self._schedule_symbol_refresh()
 
@@ -634,6 +637,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     volume_usd=random.uniform(10_000_000, 200_000_000),
                     volatility=random.uniform(0.5, 3.0),
                     imbalance=random.uniform(-1.0, 1.0),
+                    change_24h=random.uniform(-6.0, 12.0),
                 )
             )
         return metrics
@@ -672,7 +676,8 @@ class TradingApp(QtWidgets.QMainWindow):
             self._apply_strategy(snapshot, fee_buffer)
 
     def _get_active_symbols(self) -> List[str]:
-        return [metric.symbol for metric in self.symbol_metrics[: self.top_n_input.value()]]
+        top_n = 5
+        return [metric.symbol for metric in self.symbol_metrics[:top_n]]
 
     def _simulate_market_snapshot(self, symbol: str) -> MarketSnapshot:
         base = 30000 if symbol == "BTCUSDT" else 2000 if symbol == "ETHUSDT" else 100

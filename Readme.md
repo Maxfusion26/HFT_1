@@ -9,7 +9,7 @@ logging, and a backtesting dashboard.
 - Connect/Disconnect and Auto Trading toggles.
 - Market-making mode with imbalance skew controls and fee-aware thresholds.
 - TP/SL controls (no timeout-based exits).
-- Multi-symbol scoring table plus auto-select top N symbols (always-on).
+- Multi-symbol scoring table plus auto-select top 5 symbols by 24h growth (always-on).
 - Backtesting simulator and P&L dashboard placeholder with fee buffer.
 - File + UI logging.
 
