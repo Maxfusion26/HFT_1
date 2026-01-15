@@ -879,7 +879,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_size_input.valueChanged.connect(self._persist_config)
         self.max_positions_input.valueChanged.connect(self._persist_config)
         self.tp_input.valueChanged.connect(self._persist_config)
+        self.tp_input.valueChanged.connect(self._render_portfolio_table)
         self.sl_input.valueChanged.connect(self._persist_config)
+        self.sl_input.valueChanged.connect(self._render_portfolio_table)
         self.maker_mode_checkbox.toggled.connect(self._persist_config)
         self.risk_skew_input.valueChanged.connect(self._persist_config)
         self.spread_multiplier_input.valueChanged.connect(self._persist_config)
@@ -1131,6 +1133,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
         self._refresh_symbol_table()
+        if self.open_positions:
+            self._render_portfolio_table()
 
     def _on_portfolio_ready(self, positions: list, balance: dict, error: object) -> None:
         if error:
