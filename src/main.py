@@ -82,6 +82,11 @@ class ConfigManager:
     def save(self, data: dict) -> None:
         self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+    def update(self, updates: dict) -> None:
+        current = self.load()
+        current.update(updates)
+        self.save(current)
+
 
 class BybitRestClient:
     def __init__(self, api_key: str, api_secret: str, base_url: str) -> None:
@@ -374,7 +379,7 @@ class TradingApp(QtWidgets.QMainWindow):
         header.addStretch()
         header.addLayout(status_wrap)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
 
         left_panel = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_panel)
@@ -574,12 +579,12 @@ class TradingApp(QtWidgets.QMainWindow):
         right_layout.addWidget(universe_group)
         right_layout.addWidget(log_group)
 
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([420, 560])
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(right_panel)
+        self.main_splitter.setSizes([420, 560])
 
         layout.addLayout(header)
-        layout.addWidget(splitter)
+        layout.addWidget(self.main_splitter)
 
     def _setup_backtest_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.backtest_tab)
@@ -642,6 +647,27 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_secret_input.setText(data.get("api_secret", ""))
         self.api_base_url_input.setText(data.get("base_url", "https://api.bybit.com"))
         self.auto_save_checkbox.setChecked(data.get("auto_save", False))
+        if geometry := data.get("window_geometry"):
+            self.restoreGeometry(QtCore.QByteArray.fromHex(geometry.encode("utf-8")))
+        if splitter_sizes := data.get("splitter_sizes"):
+            self.main_splitter.setSizes(splitter_sizes)
+
+        self.position_size_input.setValue(data.get("position_size", 500))
+        self.tp_input.setValue(data.get("tp_pct", 0.8))
+        self.sl_input.setValue(data.get("sl_pct", 0.4))
+        self.maker_mode_checkbox.setChecked(data.get("maker_mode", False))
+        self.risk_skew_input.setValue(data.get("risk_skew", 0.15))
+        self.spread_multiplier_input.setValue(data.get("spread_multiplier", 1.2))
+        self.maker_fee_input.setValue(data.get("maker_fee", 0.01))
+        self.taker_fee_input.setValue(data.get("taker_fee", 0.06))
+        self.fee_buffer_input.setValue(data.get("fee_buffer", 0.1))
+        self.top_n_input.setValue(data.get("top_n", 5))
+        self.auto_select_interval.setValue(data.get("refresh_interval", 60))
+        self.order_type_input.setCurrentText(data.get("order_type", "Market"))
+        self.limit_price_input.setValue(data.get("limit_price", 0.0))
+        self.auto_shift_checkbox.setChecked(data.get("auto_shift", True))
+        self.shift_bps_input.setValue(data.get("shift_bps", 0.05))
+        self.position_mode_input.setCurrentText(data.get("position_mode", "Auto-detect"))
 
     def _setup_logging(self) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -663,6 +689,22 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_key_input.textChanged.connect(self._persist_config)
         self.api_secret_input.textChanged.connect(self._persist_config)
         self.api_base_url_input.textChanged.connect(self._persist_config)
+        self.position_size_input.valueChanged.connect(self._persist_config)
+        self.tp_input.valueChanged.connect(self._persist_config)
+        self.sl_input.valueChanged.connect(self._persist_config)
+        self.maker_mode_checkbox.toggled.connect(self._persist_config)
+        self.risk_skew_input.valueChanged.connect(self._persist_config)
+        self.spread_multiplier_input.valueChanged.connect(self._persist_config)
+        self.maker_fee_input.valueChanged.connect(self._persist_config)
+        self.taker_fee_input.valueChanged.connect(self._persist_config)
+        self.fee_buffer_input.valueChanged.connect(self._persist_config)
+        self.top_n_input.valueChanged.connect(self._persist_config)
+        self.auto_select_interval.valueChanged.connect(self._persist_config)
+        self.order_type_input.currentTextChanged.connect(self._persist_config)
+        self.limit_price_input.valueChanged.connect(self._persist_config)
+        self.auto_shift_checkbox.toggled.connect(self._persist_config)
+        self.shift_bps_input.valueChanged.connect(self._persist_config)
+        self.position_mode_input.currentTextChanged.connect(self._persist_config)
         self.auto_select_button.clicked.connect(self._refresh_symbol_table)
         self.auto_select_checkbox.toggled.connect(self._toggle_auto_select)
         self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
@@ -678,6 +720,24 @@ class TradingApp(QtWidgets.QMainWindow):
             "api_secret": self.api_secret_input.text().strip(),
             "base_url": self.api_base_url_input.text().strip(),
             "auto_save": self.auto_save_checkbox.isChecked(),
+            "position_size": self.position_size_input.value(),
+            "tp_pct": self.tp_input.value(),
+            "sl_pct": self.sl_input.value(),
+            "maker_mode": self.maker_mode_checkbox.isChecked(),
+            "risk_skew": self.risk_skew_input.value(),
+            "spread_multiplier": self.spread_multiplier_input.value(),
+            "maker_fee": self.maker_fee_input.value(),
+            "taker_fee": self.taker_fee_input.value(),
+            "fee_buffer": self.fee_buffer_input.value(),
+            "top_n": self.top_n_input.value(),
+            "refresh_interval": self.auto_select_interval.value(),
+            "order_type": self.order_type_input.currentText(),
+            "limit_price": self.limit_price_input.value(),
+            "auto_shift": self.auto_shift_checkbox.isChecked(),
+            "shift_bps": self.shift_bps_input.value(),
+            "position_mode": self.position_mode_input.currentText(),
+            "window_geometry": self.saveGeometry().toHex().data().decode("utf-8"),
+            "splitter_sizes": self.main_splitter.sizes(),
         }
         self.config.save(data)
 
