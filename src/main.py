@@ -611,6 +611,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.sl_input.setValue(0.4)
         self.sl_input.setSuffix(" %")
 
+        self.trailing_tp_sl_checkbox = QtWidgets.QCheckBox("Auto-trail TP/SL")
+        self.trailing_tp_sl_checkbox.setChecked(False)
+        self.trailing_trigger_input = QtWidgets.QDoubleSpinBox()
+        self.trailing_trigger_input.setRange(0.0, 5.0)
+        self.trailing_trigger_input.setValue(0.3)
+        self.trailing_trigger_input.setSuffix(" %")
+
         self.maker_mode_checkbox = QtWidgets.QCheckBox("Market making mode")
         self.risk_skew_input = QtWidgets.QDoubleSpinBox()
         self.risk_skew_input.setRange(0.0, 1.0)
@@ -663,6 +670,9 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.tp_input, 3, 1)
         controls_layout.addWidget(QtWidgets.QLabel("SL"), 3, 2)
         controls_layout.addWidget(self.sl_input, 3, 3)
+        controls_layout.addWidget(self.trailing_tp_sl_checkbox, 3, 4)
+        controls_layout.addWidget(QtWidgets.QLabel("Trail trigger"), 3, 5)
+        controls_layout.addWidget(self.trailing_trigger_input, 3, 6)
         controls_layout.addWidget(self.maker_mode_checkbox, 4, 0)
         controls_layout.addWidget(QtWidgets.QLabel("Skew"), 4, 1)
         controls_layout.addWidget(self.risk_skew_input, 4, 2)
@@ -865,6 +875,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.max_positions_input.setValue(data.get("max_positions", 5))
         self.tp_input.setValue(data.get("tp_pct", 0.8))
         self.sl_input.setValue(data.get("sl_pct", 0.4))
+        self.trailing_tp_sl_checkbox.setChecked(data.get("trailing_tp_sl", False))
+        self.trailing_trigger_input.setValue(data.get("trailing_trigger", 0.3))
         self.maker_mode_checkbox.setChecked(data.get("maker_mode", False))
         self.risk_skew_input.setValue(data.get("risk_skew", 0.15))
         self.spread_multiplier_input.setValue(data.get("spread_multiplier", 1.2))
@@ -907,6 +919,10 @@ class TradingApp(QtWidgets.QMainWindow):
         self.tp_input.valueChanged.connect(self._render_portfolio_table)
         self.sl_input.valueChanged.connect(self._persist_config)
         self.sl_input.valueChanged.connect(self._render_portfolio_table)
+        self.trailing_tp_sl_checkbox.toggled.connect(self._persist_config)
+        self.trailing_tp_sl_checkbox.toggled.connect(self._render_portfolio_table)
+        self.trailing_trigger_input.valueChanged.connect(self._persist_config)
+        self.trailing_trigger_input.valueChanged.connect(self._render_portfolio_table)
         self.maker_mode_checkbox.toggled.connect(self._persist_config)
         self.risk_skew_input.valueChanged.connect(self._persist_config)
         self.spread_multiplier_input.valueChanged.connect(self._persist_config)
@@ -940,6 +956,8 @@ class TradingApp(QtWidgets.QMainWindow):
             "max_positions": self.max_positions_input.value(),
             "tp_pct": self.tp_input.value(),
             "sl_pct": self.sl_input.value(),
+            "trailing_tp_sl": self.trailing_tp_sl_checkbox.isChecked(),
+            "trailing_trigger": self.trailing_trigger_input.value(),
             "maker_mode": self.maker_mode_checkbox.isChecked(),
             "risk_skew": self.risk_skew_input.value(),
             "spread_multiplier": self.spread_multiplier_input.value(),
@@ -1244,8 +1262,6 @@ class TradingApp(QtWidgets.QMainWindow):
             ]
         )
         self.positions_table.setRowCount(len(self.open_positions))
-        tp_pct = self.tp_input.value() / 100
-        sl_pct = self.sl_input.value() / 100
         for row, position in enumerate(self.open_positions):
             self.positions_table.setItem(row, 0, QtWidgets.QTableWidgetItem(position.symbol))
             self.positions_table.setItem(row, 1, QtWidgets.QTableWidgetItem(position.side))
@@ -1254,13 +1270,15 @@ class TradingApp(QtWidgets.QMainWindow):
             self.positions_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{position.unrealized_pnl:.2f}"))
             last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
             self.positions_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{last_price:.4f}"))
-            direction = 1 if position.side.lower() == "buy" else -1
-            tp_price = position.entry_price * (1 + (tp_pct * direction))
-            sl_price = position.entry_price * (1 - (sl_pct * direction))
+            tp_price, sl_price = self._get_tp_sl_prices(
+                position.entry_price,
+                last_price,
+                position.side,
+            )
             self.positions_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
             self.positions_table.setItem(row, 7, QtWidgets.QTableWidgetItem(f"{sl_price:.4f}"))
-            tp_profit = position.entry_price * tp_pct * position.size
-            sl_loss = position.entry_price * sl_pct * position.size
+            tp_profit = abs(tp_price - position.entry_price) * position.size
+            sl_loss = abs(position.entry_price - sl_price) * position.size
             self.positions_table.setItem(row, 8, QtWidgets.QTableWidgetItem(f"{tp_profit:.2f}"))
             self.positions_table.setItem(row, 9, QtWidgets.QTableWidgetItem(f"{sl_loss:.2f}"))
             side_color = (
@@ -1295,20 +1313,47 @@ class TradingApp(QtWidgets.QMainWindow):
         self.equity_label.setText(f"Equity: {total_equity}")
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
 
+    def _get_tp_sl_prices(
+        self,
+        entry_price: float,
+        last_price: float,
+        side: str,
+        base_tp: Optional[float] = None,
+        base_sl: Optional[float] = None,
+    ) -> tuple[float, float]:
+        tp_pct = self.tp_input.value() / 100
+        sl_pct = self.sl_input.value() / 100
+        direction = 1 if side.lower() == "buy" else -1
+        trigger_pct = self.trailing_trigger_input.value() / 100
+        profit_pct = 0.0
+        if entry_price > 0:
+            profit_pct = (last_price - entry_price) / entry_price * direction
+        trailing_enabled = self.trailing_tp_sl_checkbox.isChecked() and profit_pct >= trigger_pct
+        base_price = last_price if trailing_enabled else entry_price
+        tp_price = base_price * (1 + (tp_pct * direction))
+        sl_price = base_price * (1 - (sl_pct * direction))
+        if base_tp is not None:
+            tp_price = max(tp_price, base_tp) if direction > 0 else min(tp_price, base_tp)
+        if base_sl is not None:
+            sl_price = max(sl_price, base_sl) if direction > 0 else min(sl_price, base_sl)
+        return tp_price, sl_price
+
     def _monitor_positions_for_exit(self) -> None:
         if not self.auto_trading_toggle.isChecked():
             return
-        taker_fee = self.strategy.taker_fee
-        tp_pct = self.tp_input.value() / 100
-        sl_pct = self.sl_input.value() / 100
         for position in self.open_positions:
             last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
             if not last_price or position.entry_price <= 0:
                 continue
+            tp_price, sl_price = self._get_tp_sl_prices(
+                position.entry_price,
+                last_price,
+                position.side,
+            )
             direction = 1 if position.side.lower() == "buy" else -1
-            gross_pct = (last_price - position.entry_price) / position.entry_price * direction
-            net_pct = gross_pct - (taker_fee * 2)
-            if net_pct >= tp_pct or net_pct <= -sl_pct:
+            hit_tp = last_price >= tp_price if direction > 0 else last_price <= tp_price
+            hit_sl = last_price <= sl_price if direction > 0 else last_price >= sl_price
+            if hit_tp or hit_sl:
                 close_side = "Sell" if direction > 0 else "Buy"
                 position_idx = (
                     position.position_idx
@@ -1479,6 +1524,15 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.warning("Local position cleared (not on exchange): %s", snapshot.symbol)
             return
         direction = 1 if position.qty > 0 else -1
+        tp_price, sl_price = self._get_tp_sl_prices(
+            position.entry_price,
+            snapshot.mid,
+            "Buy" if direction > 0 else "Sell",
+            base_tp=position.tp_price,
+            base_sl=position.sl_price,
+        )
+        position.tp_price = tp_price
+        position.sl_price = sl_price
         hit_tp = snapshot.mid >= position.tp_price if direction > 0 else snapshot.mid <= position.tp_price
         hit_sl = snapshot.mid <= position.sl_price if direction > 0 else snapshot.mid >= position.sl_price
         if hit_tp or hit_sl:
