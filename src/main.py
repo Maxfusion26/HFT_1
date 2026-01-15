@@ -89,6 +89,7 @@ class BybitRestClient:
         qty: float,
         order_type: str = "Market",
         position_idx: int = 0,
+        price: Optional[float] = None,
     ) -> dict:
         endpoint = "/v5/order/create"
         timestamp = str(int(time.time() * 1000))
@@ -103,6 +104,10 @@ class BybitRestClient:
             "orderLinkId": str(uuid.uuid4()),
             "positionIdx": position_idx,
         }
+        if order_type == "Limit":
+            if price is None:
+                raise ValueError("Limit orders require a price.")
+            payload["price"] = f"{price:.2f}"
         payload_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         signature = self._sign(timestamp, recv_window, payload_str)
         headers = {
@@ -118,6 +123,16 @@ class BybitRestClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def fetch_linear_tickers(self) -> List[dict]:
+        endpoint = "/v5/market/tickers"
+        params = {"category": "linear"}
+        response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return []
+        return payload.get("result", {}).get("list", [])
 
     def fetch_position_mode(self) -> Optional[str]:
         endpoint = "/v5/position/list"
@@ -320,6 +335,15 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_size_input.setValue(500)
         self.position_size_input.setSuffix(" $")
 
+        self.order_type_input = QtWidgets.QComboBox()
+        self.order_type_input.addItems(["Market", "Limit"])
+        self.limit_price_input = QtWidgets.QDoubleSpinBox()
+        self.limit_price_input.setRange(0.0, 1_000_000)
+        self.limit_price_input.setDecimals(2)
+        self.limit_price_input.setValue(0.0)
+        self.limit_price_input.setSuffix(" $")
+        self.limit_price_input.setEnabled(False)
+
         self.top_n_input = QtWidgets.QSpinBox()
         self.top_n_input.setRange(5, 5)
         self.top_n_input.setValue(5)
@@ -383,28 +407,32 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.symbol_input, 1, 1)
         controls_layout.addWidget(QtWidgets.QLabel("Position size"), 1, 2)
         controls_layout.addWidget(self.position_size_input, 1, 3)
-        controls_layout.addWidget(QtWidgets.QLabel("TP"), 2, 0)
-        controls_layout.addWidget(self.tp_input, 2, 1)
-        controls_layout.addWidget(QtWidgets.QLabel("SL"), 2, 2)
-        controls_layout.addWidget(self.sl_input, 2, 3)
-        controls_layout.addWidget(self.maker_mode_checkbox, 3, 0)
-        controls_layout.addWidget(QtWidgets.QLabel("Skew"), 3, 1)
-        controls_layout.addWidget(self.risk_skew_input, 3, 2)
-        controls_layout.addWidget(QtWidgets.QLabel("Spread"), 3, 3)
-        controls_layout.addWidget(self.spread_multiplier_input, 3, 4)
-        controls_layout.addWidget(QtWidgets.QLabel("Position mode"), 3, 5)
-        controls_layout.addWidget(self.position_mode_input, 3, 6)
-        controls_layout.addWidget(QtWidgets.QLabel("Maker fee"), 4, 0)
-        controls_layout.addWidget(self.maker_fee_input, 4, 1)
-        controls_layout.addWidget(QtWidgets.QLabel("Taker fee"), 4, 2)
-        controls_layout.addWidget(self.taker_fee_input, 4, 3)
-        controls_layout.addWidget(QtWidgets.QLabel("Fee buffer"), 4, 4)
-        controls_layout.addWidget(self.fee_buffer_input, 4, 5)
-        controls_layout.addWidget(QtWidgets.QLabel("Top (24h рост)"), 5, 0)
-        controls_layout.addWidget(self.top_n_input, 5, 1)
-        controls_layout.addWidget(self.auto_select_checkbox, 5, 2)
-        controls_layout.addWidget(QtWidgets.QLabel("Refresh"), 5, 3)
-        controls_layout.addWidget(self.auto_select_interval, 5, 4)
+        controls_layout.addWidget(QtWidgets.QLabel("Order type"), 2, 0)
+        controls_layout.addWidget(self.order_type_input, 2, 1)
+        controls_layout.addWidget(QtWidgets.QLabel("Limit price"), 2, 2)
+        controls_layout.addWidget(self.limit_price_input, 2, 3)
+        controls_layout.addWidget(QtWidgets.QLabel("TP"), 3, 0)
+        controls_layout.addWidget(self.tp_input, 3, 1)
+        controls_layout.addWidget(QtWidgets.QLabel("SL"), 3, 2)
+        controls_layout.addWidget(self.sl_input, 3, 3)
+        controls_layout.addWidget(self.maker_mode_checkbox, 4, 0)
+        controls_layout.addWidget(QtWidgets.QLabel("Skew"), 4, 1)
+        controls_layout.addWidget(self.risk_skew_input, 4, 2)
+        controls_layout.addWidget(QtWidgets.QLabel("Spread"), 4, 3)
+        controls_layout.addWidget(self.spread_multiplier_input, 4, 4)
+        controls_layout.addWidget(QtWidgets.QLabel("Position mode"), 4, 5)
+        controls_layout.addWidget(self.position_mode_input, 4, 6)
+        controls_layout.addWidget(QtWidgets.QLabel("Maker fee"), 5, 0)
+        controls_layout.addWidget(self.maker_fee_input, 5, 1)
+        controls_layout.addWidget(QtWidgets.QLabel("Taker fee"), 5, 2)
+        controls_layout.addWidget(self.taker_fee_input, 5, 3)
+        controls_layout.addWidget(QtWidgets.QLabel("Fee buffer"), 5, 4)
+        controls_layout.addWidget(self.fee_buffer_input, 5, 5)
+        controls_layout.addWidget(QtWidgets.QLabel("Top (24h рост)"), 6, 0)
+        controls_layout.addWidget(self.top_n_input, 6, 1)
+        controls_layout.addWidget(self.auto_select_checkbox, 6, 2)
+        controls_layout.addWidget(QtWidgets.QLabel("Refresh"), 6, 3)
+        controls_layout.addWidget(self.auto_select_interval, 6, 4)
 
         self.symbol_table = QtWidgets.QTableWidget(0, 6)
         self.symbol_table.setHorizontalHeaderLabels(
@@ -515,6 +543,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_base_url_input.textChanged.connect(self._persist_config)
         self.auto_select_button.clicked.connect(self._refresh_symbol_table)
         self.auto_select_checkbox.toggled.connect(self._toggle_auto_select)
+        self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
         self.trading_timer.timeout.connect(self._run_trading_cycle)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
@@ -529,6 +558,9 @@ class TradingApp(QtWidgets.QMainWindow):
             "auto_save": self.auto_save_checkbox.isChecked(),
         }
         self.config.save(data)
+
+    def _toggle_order_type(self, order_type: str) -> None:
+        self.limit_price_input.setEnabled(order_type == "Limit")
 
     def _connect(self) -> None:
         api_key = self.api_key_input.text().strip()
@@ -628,19 +660,43 @@ class TradingApp(QtWidgets.QMainWindow):
         return False
 
     def _generate_symbol_metrics(self) -> List[SymbolMetrics]:
-        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+        symbols, change_map = self._fetch_symbol_universe()
         metrics = []
         for symbol in symbols:
+            change_24h = change_map.get(symbol, random.uniform(-6.0, 12.0))
             metrics.append(
                 SymbolMetrics(
                     symbol=symbol,
                     volume_usd=random.uniform(10_000_000, 200_000_000),
                     volatility=random.uniform(0.5, 3.0),
                     imbalance=random.uniform(-1.0, 1.0),
-                    change_24h=random.uniform(-6.0, 12.0),
+                    change_24h=change_24h,
                 )
             )
         return metrics
+
+    def _fetch_symbol_universe(self) -> tuple[List[str], dict]:
+        if not self.client:
+            fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+            return fallback, {}
+        try:
+            tickers = self.client.fetch_linear_tickers()
+            symbols = []
+            change_map = {}
+            for ticker in tickers:
+                symbol = ticker.get("symbol")
+                last_price = float(ticker.get("lastPrice", 0) or 0)
+                prev_price = float(ticker.get("prevPrice24h", 0) or 0)
+                if symbol:
+                    symbols.append(symbol)
+                    if prev_price > 0:
+                        change_map[symbol] = ((last_price - prev_price) / prev_price) * 100
+            fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+            return (symbols if symbols else fallback, change_map)
+        except requests.RequestException as exc:
+            logging.error("Failed to fetch symbol universe: %s", exc)
+            fallback = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+            return fallback, {}
 
     def _run_backtest(self) -> None:
         steps = self.backtest_steps_input.value()
@@ -780,14 +836,35 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
         position_idx = self._resolve_position_idx(side)
+        order_type = self.order_type_input.currentText()
+        limit_price = None
+        if order_type == "Limit":
+            limit_price = self.limit_price_input.value()
+            if limit_price <= 0:
+                logging.error("Limit price must be greater than 0.")
+                return
         try:
-            response = self._send_order(symbol, side, normalized_qty, position_idx)
+            response = self._send_order(
+                symbol,
+                side,
+                normalized_qty,
+                position_idx,
+                order_type,
+                limit_price,
+            )
             if self._is_position_mode_error(response):
                 fallback_idx = 0 if position_idx in (1, 2) else (1 if side == "Buy" else 2)
                 logging.warning(
                     "Position mode mismatch; retrying with positionIdx=%s", fallback_idx
                 )
-                response = self._send_order(symbol, side, normalized_qty, fallback_idx)
+                response = self._send_order(
+                    symbol,
+                    side,
+                    normalized_qty,
+                    fallback_idx,
+                    order_type,
+                    limit_price,
+                )
                 if self._is_position_mode_error(response):
                     logging.error(
                         "Order rejected after retry: %s %s %.6f -> %s",
@@ -805,12 +882,22 @@ class TradingApp(QtWidgets.QMainWindow):
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
 
-    def _send_order(self, symbol: str, side: str, qty: float, position_idx: int) -> dict:
+    def _send_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        position_idx: int,
+        order_type: str,
+        limit_price: Optional[float],
+    ) -> dict:
         return self.client.create_order(
             symbol=symbol,
             side=side,
             qty=qty,
             position_idx=position_idx,
+            order_type=order_type,
+            price=limit_price,
         )
 
     def _is_position_mode_error(self, response: dict) -> bool:
