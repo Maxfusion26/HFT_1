@@ -64,6 +64,7 @@ class OrderRequest:
     order_type: str
     limit_price: Optional[float]
     retry: int = 0
+    remaining_qty: Optional[float] = None
 
 
 class ConfigManager:
@@ -1114,6 +1115,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position_idx=position_idx,
             order_type=order_type,
             limit_price=limit_price,
+            remaining_qty=normalized_qty if order_type == "Limit" else None,
         )
         self._dispatch_order(request)
 
@@ -1168,12 +1170,44 @@ class TradingApp(QtWidgets.QMainWindow):
             request.qty,
             response,
         )
+        if request.order_type == "Limit" and request.remaining_qty:
+            filled = self._extract_filled_qty(response)
+            remaining = max(request.remaining_qty - filled, 0)
+            if remaining > 0:
+                logging.info(
+                    "Partial fill detected: %.6f remaining for %s %s",
+                    remaining,
+                    request.side,
+                    request.symbol,
+                )
+                retry_request = OrderRequest(
+                    symbol=request.symbol,
+                    side=request.side,
+                    qty=remaining,
+                    position_idx=request.position_idx,
+                    order_type=request.order_type,
+                    limit_price=request.limit_price,
+                    retry=request.retry + 1,
+                    remaining_qty=remaining,
+                )
+                self._dispatch_order(retry_request)
+                return
         if request.order_type == "Limit":
             self.limit_shift_attempts.pop((request.symbol, request.side), None)
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
         return response.get("retCode") == 10001 and "position idx not match position mode" in ret_msg
+
+    def _extract_filled_qty(self, response: dict) -> float:
+        result = response.get("result", {})
+        qty = result.get("qty")
+        if qty is not None:
+            try:
+                return float(qty)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
 
     def _resolve_position_idx(self, side: str) -> Optional[int]:
         selection = self.position_mode_input.currentIndex()
