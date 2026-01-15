@@ -552,7 +552,7 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_group.setProperty("card", "true")
         controls_layout = QtWidgets.QGridLayout(controls_group)
         controls_layout.setHorizontalSpacing(10)
-        controls_layout.setVerticalSpacing(8)
+        controls_layout.setVerticalSpacing(6)
         controls_layout.setColumnStretch(1, 1)
         controls_layout.setColumnStretch(3, 1)
         controls_layout.setColumnStretch(5, 1)
@@ -822,6 +822,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.positions_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
+        self.positions_table.setProperty("role", "positions")
         self.positions_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
         )
@@ -854,6 +855,7 @@ class TradingApp(QtWidgets.QMainWindow):
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; alternate-background-color: #0f172a; }
             QTableWidget::item { padding: 4px; }
+            QTableWidget[role="positions"]::item { font-weight: 600; }
             QHeaderView::section { background: #111827; color: #94a3b8; padding: 7px; border: none; font-weight: 600; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
