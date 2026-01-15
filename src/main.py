@@ -1049,7 +1049,18 @@ class TradingApp(QtWidgets.QMainWindow):
                 return
             direction = 1 if momentum > 0 else -1
             entry = snapshot.ask if direction > 0 else snapshot.bid
-            position.qty = direction * (self.position_size_input.value() / snapshot.mid)
+            desired_usdt = self.position_size_input.value()
+            raw_qty = desired_usdt / entry if entry else 0.0
+            normalized_qty = self._normalize_qty(snapshot.symbol, raw_qty, entry)
+            if normalized_qty is None:
+                logging.error(
+                    "Order rejected locally: %s %s %.2f USDT (min notional/min qty)",
+                    "Buy" if direction > 0 else "Sell",
+                    snapshot.symbol,
+                    desired_usdt,
+                )
+                return
+            position.qty = direction * normalized_qty
             position.entry_price = entry
             tp_pct = self.tp_input.value() / 100
             sl_pct = self.sl_input.value() / 100
