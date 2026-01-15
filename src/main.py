@@ -1134,6 +1134,11 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         if self._is_position_mode_error(response) and request.retry == 0:
             fallback_idx = 0 if request.position_idx in (1, 2) else (1 if request.side == "Buy" else 2)
+            if fallback_idx == request.position_idx:
+                logging.error(
+                    "Position mode mismatch persists; no alternate positionIdx available."
+                )
+                return
             logging.warning("Position mode mismatch; retrying with positionIdx=%s", fallback_idx)
             retry_request = OrderRequest(
                 symbol=request.symbol,
