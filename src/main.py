@@ -777,7 +777,7 @@ class TradingApp(QtWidgets.QMainWindow):
         summary_layout.addWidget(self.unrealized_label, 1, 0)
         summary_layout.addWidget(self.open_positions_label, 1, 1)
 
-        self.positions_table = QtWidgets.QTableWidget(0, 8)
+        self.positions_table = QtWidgets.QTableWidget(0, 10)
         self.positions_table.setHorizontalHeaderLabels(
             [
                 "Symbol",
@@ -788,6 +788,8 @@ class TradingApp(QtWidgets.QMainWindow):
                 "Current Price",
                 "TP Price",
                 "SL Price",
+                "TP Profit (USDT)",
+                "SL Loss (USDT)",
             ]
         )
         self.positions_table.horizontalHeader().setSectionResizeMode(
@@ -1203,7 +1205,7 @@ class TradingApp(QtWidgets.QMainWindow):
         )
 
     def _render_portfolio_table(self) -> None:
-        self.positions_table.setColumnCount(8)
+        self.positions_table.setColumnCount(10)
         self.positions_table.setHorizontalHeaderLabels(
             [
                 "Symbol",
@@ -1214,6 +1216,8 @@ class TradingApp(QtWidgets.QMainWindow):
                 "Current Price",
                 "TP Price",
                 "SL Price",
+                "TP Profit (USDT)",
+                "SL Loss (USDT)",
             ]
         )
         self.positions_table.setRowCount(len(self.open_positions))
@@ -1232,6 +1236,10 @@ class TradingApp(QtWidgets.QMainWindow):
             sl_price = position.entry_price * (1 - (sl_pct * direction))
             self.positions_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
             self.positions_table.setItem(row, 7, QtWidgets.QTableWidgetItem(f"{sl_price:.4f}"))
+            tp_profit = position.entry_price * tp_pct * position.size
+            sl_loss = position.entry_price * sl_pct * position.size
+            self.positions_table.setItem(row, 8, QtWidgets.QTableWidgetItem(f"{tp_profit:.2f}"))
+            self.positions_table.setItem(row, 9, QtWidgets.QTableWidgetItem(f"{sl_loss:.2f}"))
             side_color = (
                 QtGui.QColor(34, 197, 94, 70)
                 if position.side.lower() == "buy"
