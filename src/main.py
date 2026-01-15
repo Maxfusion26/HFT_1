@@ -773,7 +773,8 @@ class TradingApp(QtWidgets.QMainWindow):
             return 0
         if self.position_mode_detected == "hedge":
             return 1 if side == "Buy" else 2
-        return None
+        logging.warning("Position mode unknown; defaulting to one-way (posIdx 0).")
+        return 0
 
     def _detect_position_mode(self) -> Optional[str]:
         if not self.client:
@@ -783,11 +784,12 @@ class TradingApp(QtWidgets.QMainWindow):
             if mode:
                 logging.info("Detected position mode: %s", mode)
             else:
-                logging.warning("Position mode detection failed.")
+                logging.warning("Position mode detection failed; defaulting to one-way.")
+                mode = "one-way"
             return mode
         except requests.RequestException as exc:
-            logging.error("Position mode detection error: %s", exc)
-            return None
+            logging.error("Position mode detection error: %s. Defaulting to one-way.", exc)
+            return "one-way"
 
     def _normalize_qty(self, symbol: str, qty: float) -> Optional[float]:
         specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001})
