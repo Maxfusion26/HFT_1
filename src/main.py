@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import hmac
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -76,27 +77,36 @@ class BybitRestClient:
         self.api_secret = api_secret
         self.base_url = base_url.rstrip("/")
 
-    def _sign(self, params: dict) -> str:
-        sorted_items = "&".join(f"{key}={params[key]}" for key in sorted(params))
-        payload = f"{self.api_key}{sorted_items}{self.api_secret}"
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    def _sign(self, timestamp: str, recv_window: str, payload: str) -> str:
+        message = f"{timestamp}{self.api_key}{recv_window}{payload}"
+        return hmac.new(self.api_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def create_order(self, symbol: str, side: str, qty: float, order_type: str = "Market") -> dict:
         endpoint = "/v5/order/create"
         timestamp = str(int(time.time() * 1000))
-        params = {
-            "api_key": self.api_key,
+        recv_window = "5000"
+        payload = {
             "symbol": symbol,
             "side": side,
             "orderType": order_type,
             "qty": f"{qty:.6f}",
             "category": "linear",
             "timeInForce": "GTC",
-            "timestamp": timestamp,
             "orderLinkId": str(uuid.uuid4()),
         }
-        params["sign"] = self._sign(params)
-        response = requests.post(f"{self.base_url}{endpoint}", json=params, timeout=10)
+        payload_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        signature = self._sign(timestamp, recv_window, payload_str)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            f"{self.base_url}{endpoint}", data=payload_str, headers=headers, timeout=10
+        )
         response.raise_for_status()
         return response.json()
 
@@ -671,6 +681,11 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         try:
             response = self.client.create_order(symbol=symbol, side=side, qty=qty)
+            ret_code = response.get("retCode")
+            ret_msg = response.get("retMsg")
+            if ret_code != 0:
+                logging.error("Order rejected: %s %s %.6f -> %s", side, symbol, qty, response)
+                return
             logging.info("Order sent: %s %s %.6f -> %s", side, symbol, qty, response)
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
