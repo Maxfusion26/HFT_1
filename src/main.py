@@ -517,14 +517,16 @@ class TradingApp(QtWidgets.QMainWindow):
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
 
         left_panel = QtWidgets.QWidget()
+        left_panel.setProperty("panel", "true")
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(14)
 
         right_panel = QtWidgets.QWidget()
+        right_panel.setProperty("panel", "true")
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
+        right_layout.setSpacing(14)
 
         creds_group = QtWidgets.QGroupBox("Credentials")
         creds_group.setProperty("card", "true")
@@ -723,6 +725,10 @@ class TradingApp(QtWidgets.QMainWindow):
 
         left_layout.addWidget(creds_group)
         left_layout.addWidget(controls_group)
+        divider = QtWidgets.QFrame()
+        divider.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        divider.setProperty("divider", "true")
+        left_layout.addWidget(divider)
         left_layout.addWidget(self._build_portfolio_section())
         left_layout.addStretch()
 
@@ -824,9 +830,11 @@ class TradingApp(QtWidgets.QMainWindow):
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 10px; background: #0f1422; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 10px; background: #0f1422; padding: 12px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; font-weight: 600; }
             QGroupBox[card="true"] { background: #0f172a; }
+            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 14px; padding: 8px; }
+            QFrame[divider="true"] { color: #1f2937; background: #1f2937; min-height: 1px; max-height: 1px; }
             QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 16px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
