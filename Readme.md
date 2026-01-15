@@ -12,6 +12,7 @@ logging, and a backtesting dashboard.
 - Multi-symbol scoring table plus auto-select top 5 symbols by 24h growth (always-on, sourced from Bybit tickers).
 - Backtesting simulator and P&L dashboard placeholder with fee buffer.
 - File + UI logging.
+- Max concurrent positions control to cap simultaneous open trades.
 
 ## Run
 ```bash

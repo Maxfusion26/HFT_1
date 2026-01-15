@@ -465,6 +465,10 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_size_input.setValue(500)
         self.position_size_input.setSuffix(" $")
 
+        self.max_positions_input = QtWidgets.QSpinBox()
+        self.max_positions_input.setRange(1, 50)
+        self.max_positions_input.setValue(5)
+
         self.order_type_input = QtWidgets.QComboBox()
         self.order_type_input.addItems(["Market", "Limit"])
         self.limit_price_input = QtWidgets.QDoubleSpinBox()
@@ -544,6 +548,8 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.symbol_input, 1, 1)
         controls_layout.addWidget(QtWidgets.QLabel("Position size"), 1, 2)
         controls_layout.addWidget(self.position_size_input, 1, 3)
+        controls_layout.addWidget(QtWidgets.QLabel("Max positions"), 1, 4)
+        controls_layout.addWidget(self.max_positions_input, 1, 5)
         controls_layout.addWidget(QtWidgets.QLabel("Order type"), 2, 0)
         controls_layout.addWidget(self.order_type_input, 2, 1)
         controls_layout.addWidget(QtWidgets.QLabel("Limit price"), 2, 2)
@@ -689,6 +695,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self.main_splitter.setSizes(splitter_sizes)
 
         self.position_size_input.setValue(data.get("position_size", 500))
+        self.max_positions_input.setValue(data.get("max_positions", 5))
         self.tp_input.setValue(data.get("tp_pct", 0.8))
         self.sl_input.setValue(data.get("sl_pct", 0.4))
         self.maker_mode_checkbox.setChecked(data.get("maker_mode", False))
@@ -726,6 +733,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_secret_input.textChanged.connect(self._persist_config)
         self.api_base_url_input.textChanged.connect(self._persist_config)
         self.position_size_input.valueChanged.connect(self._persist_config)
+        self.max_positions_input.valueChanged.connect(self._persist_config)
         self.tp_input.valueChanged.connect(self._persist_config)
         self.sl_input.valueChanged.connect(self._persist_config)
         self.maker_mode_checkbox.toggled.connect(self._persist_config)
@@ -757,6 +765,7 @@ class TradingApp(QtWidgets.QMainWindow):
             "base_url": self.api_base_url_input.text().strip(),
             "auto_save": self.auto_save_checkbox.isChecked(),
             "position_size": self.position_size_input.value(),
+            "max_positions": self.max_positions_input.value(),
             "tp_pct": self.tp_input.value(),
             "sl_pct": self.sl_input.value(),
             "maker_mode": self.maker_mode_checkbox.isChecked(),
@@ -1010,6 +1019,9 @@ class TradingApp(QtWidgets.QMainWindow):
             return
 
         if abs(momentum) > required_edge:
+            if self._count_open_positions() >= self.max_positions_input.value():
+                logging.info("Max positions reached; skipping new entry.")
+                return
             direction = 1 if momentum > 0 else -1
             entry = snapshot.ask if direction > 0 else snapshot.bid
             position.qty = direction * (self.position_size_input.value() / snapshot.mid)
@@ -1078,6 +1090,9 @@ class TradingApp(QtWidgets.QMainWindow):
             position.entry_price = 0.0
             position.tp_price = 0.0
             position.sl_price = 0.0
+
+    def _count_open_positions(self) -> int:
+        return sum(1 for pos in self.positions.values() if pos.qty != 0)
 
     def _place_order(self, symbol: str, side: str, qty: float, price: Optional[float] = None) -> None:
         if not self.connected or not self.client:
