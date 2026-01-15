@@ -480,17 +480,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.trading_tab = QtWidgets.QWidget()
         self.backtest_tab = QtWidgets.QWidget()
         self.dashboard_tab = QtWidgets.QWidget()
-        self.portfolio_tab = QtWidgets.QWidget()
-
         self.tabs.addTab(self.trading_tab, "Trading")
         self.tabs.addTab(self.backtest_tab, "Backtesting")
         self.tabs.addTab(self.dashboard_tab, "Dashboard")
-        self.tabs.addTab(self.portfolio_tab, "Portfolio")
 
         self._setup_trading_tab()
         self._setup_backtest_tab()
         self._setup_dashboard_tab()
-        self._setup_portfolio_tab()
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
@@ -718,6 +714,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
         left_layout.addWidget(creds_group)
         left_layout.addWidget(controls_group)
+        left_layout.addWidget(self._build_portfolio_section())
         left_layout.addStretch()
 
         right_layout.addWidget(universe_group)
@@ -758,9 +755,10 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.addWidget(self.pnl_label)
         layout.addWidget(self.pnl_chart)
 
-    def _setup_portfolio_tab(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self.portfolio_tab)
-        layout.setContentsMargins(12, 12, 12, 12)
+    def _build_portfolio_section(self) -> QtWidgets.QWidget:
+        section = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
         summary_group = QtWidgets.QGroupBox("Live Portfolio")
@@ -789,6 +787,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
         layout.addWidget(summary_group)
         layout.addWidget(self.positions_table)
+        return section
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
