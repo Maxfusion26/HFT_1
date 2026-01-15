@@ -211,24 +211,35 @@ class BybitRestClient:
         endpoint = "/v5/position/list"
         timestamp = str(int(time.time() * 1000))
         recv_window = "5000"
-        params = {"category": "linear"}
-        query = "&".join(f"{key}={params[key]}" for key in sorted(params))
-        signature = self._sign(timestamp, recv_window, query)
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-SIGN-TYPE": "2",
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-RECV-WINDOW": recv_window,
-        }
-        response = requests.get(
-            f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("retCode") != 0:
-            return []
-        return payload.get("result", {}).get("list", [])
+        base_params = {"category": "linear"}
+
+        def _request(params: dict) -> list:
+            query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+            signature = self._sign(timestamp, recv_window, query)
+            headers = {
+                "X-BAPI-API-KEY": self.api_key,
+                "X-BAPI-SIGN": signature,
+                "X-BAPI-SIGN-TYPE": "2",
+                "X-BAPI-TIMESTAMP": timestamp,
+                "X-BAPI-RECV-WINDOW": recv_window,
+            }
+            response = requests.get(
+                f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("retCode") != 0:
+                return []
+            return payload.get("result", {}).get("list", [])
+
+        positions = _request(base_params)
+        if positions:
+            return positions
+        for settle_coin in ("USDT", "USDC"):
+            positions = _request({**base_params, "settleCoin": settle_coin})
+            if positions:
+                return positions
+        return []
 
     def fetch_wallet_balance(self) -> dict:
         endpoint = "/v5/account/wallet-balance"
