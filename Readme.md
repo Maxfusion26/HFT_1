@@ -7,10 +7,10 @@ logging, and a backtesting dashboard.
 ## Features
 - Auto-save API keys (stored locally in `~/.hft_bybit/config.json`).
 - Connect/Disconnect and Auto Trading toggles.
-- Market-making mode with imbalance skew controls.
+- Market-making mode with imbalance skew controls and fee-aware thresholds.
 - TP/SL controls (no timeout-based exits).
-- Multi-symbol scoring table (volume/volatility/imbalance).
-- Backtesting simulator and P&L dashboard placeholder.
+- Multi-symbol scoring table plus auto-select top N symbols.
+- Backtesting simulator and P&L dashboard placeholder with fee buffer.
 - File + UI logging.
 
 ## Run
@@ -20,4 +20,4 @@ python src/main.py
 
 ## Notes
 - This is a scaffold/prototype. Live Bybit API integration should be added where noted.
-- Fee assumptions: taker fees 0.10% per side in the strategy estimator.
+- Fee assumptions: default UI values are 0.06% taker / 0.01% maker with an extra fee buffer.

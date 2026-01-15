@@ -1,14 +1,13 @@
 import json
 import logging
-import os
 import random
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 
 CONFIG_DIR = Path.home() / ".hft_bybit"
@@ -26,6 +25,28 @@ class SymbolMetrics:
     @property
     def score(self) -> float:
         return (self.volume_usd * 0.6) + (self.volatility * 0.3) + (self.imbalance * 0.1)
+
+
+@dataclass
+class MarketSnapshot:
+    symbol: str
+    mid: float
+    bid: float
+    ask: float
+    bid_size: float
+    ask_size: float
+    volatility: float
+    imbalance: float
+
+
+@dataclass
+class PositionState:
+    symbol: str
+    qty: float = 0.0
+    entry_price: float = 0.0
+    tp_price: float = 0.0
+    sl_price: float = 0.0
+    last_update: datetime = datetime.utcnow()
 
 
 class ConfigManager:
@@ -61,7 +82,7 @@ class QtLogHandler(logging.Handler):
 
 
 class HFTStrategy:
-    def __init__(self, maker_fee: float = 0.0002, taker_fee: float = 0.001) -> None:
+    def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
 
@@ -81,8 +102,13 @@ class HFTStrategy:
         half_spread = ((best_ask - best_bid) * spread_multiplier) / 2
         return micro_price - half_spread - skew, micro_price + half_spread - skew
 
-    def estimate_roundtrip_fee(self, notional: float) -> float:
-        return notional * (self.taker_fee + self.taker_fee)
+    def estimate_roundtrip_fee(self, notional: float, use_maker: bool) -> float:
+        fee = self.maker_fee if use_maker else self.taker_fee
+        return notional * (fee + fee)
+
+    def required_edge(self, use_maker: bool, fee_buffer: float) -> float:
+        fee = self.maker_fee if use_maker else self.taker_fee
+        return (fee + fee) + fee_buffer
 
 
 class BacktestEngine(QtCore.QObject):
@@ -92,7 +118,7 @@ class BacktestEngine(QtCore.QObject):
         super().__init__(parent)
         self.strategy = strategy
 
-    def run_dummy(self, steps: int = 100) -> None:
+    def run_dummy(self, steps: int, fee_buffer: float) -> None:
         timestamps = []
         pnl_series = []
         pnl = 0.0
@@ -112,7 +138,8 @@ class BacktestEngine(QtCore.QObject):
                 spread_multiplier=1.2,
             )
             pnl += (quote_ask - quote_bid) * 0.1
-            pnl -= self.strategy.estimate_roundtrip_fee(1000)
+            pnl -= self.strategy.estimate_roundtrip_fee(1000, use_maker=False)
+            pnl -= 1000 * fee_buffer
             timestamps.append(idx)
             pnl_series.append(pnl)
         self.finished.emit(timestamps, pnl_series)
@@ -126,6 +153,10 @@ class TradingApp(QtWidgets.QMainWindow):
         self.config = ConfigManager(CONFIG_FILE)
         self.strategy = HFTStrategy()
         self.backtest_engine = BacktestEngine(self.strategy)
+        self.positions: Dict[str, PositionState] = {}
+        self.symbol_metrics: List[SymbolMetrics] = []
+        self.trading_timer = QtCore.QTimer(self)
+        self.trading_timer.setInterval(1500)
         self._setup_ui()
         self._apply_style()
         self._load_config()
@@ -181,6 +212,16 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_size_input.setValue(500)
         self.position_size_input.setSuffix(" $")
 
+        self.top_n_input = QtWidgets.QSpinBox()
+        self.top_n_input.setRange(1, 10)
+        self.top_n_input.setValue(3)
+
+        self.auto_select_checkbox = QtWidgets.QCheckBox("Auto-select top symbols")
+        self.auto_select_interval = QtWidgets.QSpinBox()
+        self.auto_select_interval.setRange(5, 600)
+        self.auto_select_interval.setValue(60)
+        self.auto_select_interval.setSuffix(" s")
+
         self.tp_input = QtWidgets.QDoubleSpinBox()
         self.tp_input.setRange(0.1, 10.0)
         self.tp_input.setValue(0.8)
@@ -201,6 +242,24 @@ class TradingApp(QtWidgets.QMainWindow):
         self.spread_multiplier_input.setRange(1.0, 5.0)
         self.spread_multiplier_input.setValue(1.2)
 
+        self.maker_fee_input = QtWidgets.QDoubleSpinBox()
+        self.maker_fee_input.setRange(0.0, 0.5)
+        self.maker_fee_input.setDecimals(3)
+        self.maker_fee_input.setValue(0.01)
+        self.maker_fee_input.setSuffix(" %")
+
+        self.taker_fee_input = QtWidgets.QDoubleSpinBox()
+        self.taker_fee_input.setRange(0.0, 0.5)
+        self.taker_fee_input.setDecimals(3)
+        self.taker_fee_input.setValue(0.06)
+        self.taker_fee_input.setSuffix(" %")
+
+        self.fee_buffer_input = QtWidgets.QDoubleSpinBox()
+        self.fee_buffer_input.setRange(0.0, 0.5)
+        self.fee_buffer_input.setDecimals(3)
+        self.fee_buffer_input.setValue(0.1)
+        self.fee_buffer_input.setSuffix(" % buffer")
+
         controls_layout.addWidget(self.connect_button, 0, 0)
         controls_layout.addWidget(self.disconnect_button, 0, 1)
         controls_layout.addWidget(self.auto_trading_toggle, 0, 2)
@@ -217,6 +276,17 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.risk_skew_input, 3, 2)
         controls_layout.addWidget(QtWidgets.QLabel("Spread"), 3, 3)
         controls_layout.addWidget(self.spread_multiplier_input, 3, 4)
+        controls_layout.addWidget(QtWidgets.QLabel("Maker fee"), 4, 0)
+        controls_layout.addWidget(self.maker_fee_input, 4, 1)
+        controls_layout.addWidget(QtWidgets.QLabel("Taker fee"), 4, 2)
+        controls_layout.addWidget(self.taker_fee_input, 4, 3)
+        controls_layout.addWidget(QtWidgets.QLabel("Fee buffer"), 4, 4)
+        controls_layout.addWidget(self.fee_buffer_input, 4, 5)
+        controls_layout.addWidget(QtWidgets.QLabel("Top N"), 5, 0)
+        controls_layout.addWidget(self.top_n_input, 5, 1)
+        controls_layout.addWidget(self.auto_select_checkbox, 5, 2)
+        controls_layout.addWidget(QtWidgets.QLabel("Refresh"), 5, 3)
+        controls_layout.addWidget(self.auto_select_interval, 5, 4)
 
         self.symbol_table = QtWidgets.QTableWidget(0, 5)
         self.symbol_table.setHorizontalHeaderLabels(
@@ -226,7 +296,11 @@ class TradingApp(QtWidgets.QMainWindow):
             QtWidgets.QHeaderView.ResizeMode.Stretch
         )
 
-        self.auto_select_button = QtWidgets.QPushButton("Auto-select top symbols")
+        self.auto_select_button = QtWidgets.QPushButton("Refresh symbols")
+
+        self.symbol_list = QtWidgets.QListWidget()
+        self.symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        self.symbol_list.setMinimumHeight(120)
 
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
@@ -235,6 +309,8 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.addWidget(controls_group)
         layout.addWidget(self.symbol_table)
         layout.addWidget(self.auto_select_button)
+        layout.addWidget(QtWidgets.QLabel("Active symbols"))
+        layout.addWidget(self.symbol_list)
         layout.addWidget(QtWidgets.QLabel("Live Log"))
         layout.addWidget(self.log_output)
 
@@ -279,6 +355,7 @@ class TradingApp(QtWidgets.QMainWindow):
             QTextEdit { background: #11151d; color: #c9d1d9; border: 1px solid #2b2f36; border-radius: 8px; }
             QTableWidget { background: #11151d; color: #c9d1d9; border: 1px solid #2b2f36; }
             QHeaderView::section { background: #151922; color: #9aa4b2; }
+            QListWidget { background: #11151d; color: #c9d1d9; border: 1px solid #2b2f36; border-radius: 8px; }
             """
         )
 
@@ -308,6 +385,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_key_input.textChanged.connect(self._persist_config)
         self.api_secret_input.textChanged.connect(self._persist_config)
         self.auto_select_button.clicked.connect(self._refresh_symbol_table)
+        self.auto_select_checkbox.toggled.connect(self._toggle_auto_select)
+        self.trading_timer.timeout.connect(self._run_trading_cycle)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
 
@@ -332,26 +411,63 @@ class TradingApp(QtWidgets.QMainWindow):
             self.auto_trading_toggle.setText("Stop Auto Trading")
             logging.info("Auto trading enabled")
             self._log_strategy_overview()
+            self.trading_timer.start()
         else:
             self.auto_trading_toggle.setText("Start Auto Trading")
             logging.info("Auto trading disabled")
+            self.trading_timer.stop()
 
     def _log_strategy_overview(self) -> None:
         logging.info(
-            "Strategy: micro-price market making with imbalance skew; taker fee=0.10%% each side."
+            "Strategy: hybrid market making + momentum with inventory skew and fee-aware thresholds."
         )
 
     def _refresh_symbol_table(self) -> None:
-        metrics = self._generate_symbol_metrics()
-        metrics.sort(key=lambda item: item.score, reverse=True)
+        self.symbol_metrics = self._generate_symbol_metrics()
+        self.symbol_metrics.sort(key=lambda item: item.score, reverse=True)
 
-        self.symbol_table.setRowCount(len(metrics))
-        for row, metric in enumerate(metrics):
+        self.symbol_table.setRowCount(len(self.symbol_metrics))
+        for row, metric in enumerate(self.symbol_metrics):
             self.symbol_table.setItem(row, 0, QtWidgets.QTableWidgetItem(metric.symbol))
             self.symbol_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{metric.volume_usd:,.0f}"))
             self.symbol_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{metric.volatility:.3f}"))
             self.symbol_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{metric.imbalance:.3f}"))
             self.symbol_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{metric.score:,.2f}"))
+        self._update_symbol_list()
+        self._schedule_symbol_refresh()
+
+    def _toggle_auto_select(self, enabled: bool) -> None:
+        if enabled:
+            self._update_symbol_list()
+            self._schedule_symbol_refresh()
+            logging.info("Auto-select enabled: top %s symbols", self.top_n_input.value())
+        else:
+            logging.info("Auto-select disabled")
+
+    def _schedule_symbol_refresh(self) -> None:
+        if not self.auto_select_checkbox.isChecked():
+            return
+        QtCore.QTimer.singleShot(self.auto_select_interval.value() * 1000, self._refresh_symbol_table)
+
+    def _update_symbol_list(self) -> None:
+        self.symbol_list.clear()
+        for metric in self.symbol_metrics:
+            item = QtWidgets.QListWidgetItem(metric.symbol)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            is_selected = self._is_symbol_selected(metric.symbol)
+            if self.auto_select_checkbox.isChecked():
+                is_selected = metric in self.symbol_metrics[: self.top_n_input.value()]
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked if is_selected else QtCore.Qt.CheckState.Unchecked
+            )
+            self.symbol_list.addItem(item)
+
+    def _is_symbol_selected(self, symbol: str) -> bool:
+        for idx in range(self.symbol_list.count()):
+            item = self.symbol_list.item(idx)
+            if item.text() == symbol and item.checkState() == QtCore.Qt.CheckState.Checked:
+                return True
+        return False
 
     def _generate_symbol_metrics(self) -> List[SymbolMetrics]:
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
@@ -370,7 +486,8 @@ class TradingApp(QtWidgets.QMainWindow):
     def _run_backtest(self) -> None:
         steps = self.backtest_steps_input.value()
         logging.info("Running backtest for %s steps", steps)
-        self.backtest_engine.run_dummy(steps)
+        fee_buffer = self.fee_buffer_input.value() / 100
+        self.backtest_engine.run_dummy(steps, fee_buffer)
 
     def _update_backtest_results(self, timestamps: list, pnl_series: list) -> None:
         if not pnl_series:
@@ -389,6 +506,115 @@ class TradingApp(QtWidgets.QMainWindow):
             f"{idx:03d} | {value:,.2f}" for idx, value in zip(timestamps[-30:], pnl_series[-30:])
         )
         self.pnl_chart.setText(chart_preview)
+
+    def _run_trading_cycle(self) -> None:
+        self.strategy.maker_fee = self.maker_fee_input.value() / 100
+        self.strategy.taker_fee = self.taker_fee_input.value() / 100
+        fee_buffer = self.fee_buffer_input.value() / 100
+        active_symbols = self._get_active_symbols()
+        for symbol in active_symbols:
+            snapshot = self._simulate_market_snapshot(symbol)
+            self._apply_strategy(snapshot, fee_buffer)
+
+    def _get_active_symbols(self) -> List[str]:
+        if self.auto_select_checkbox.isChecked():
+            return [metric.symbol for metric in self.symbol_metrics[: self.top_n_input.value()]]
+        selected = []
+        for idx in range(self.symbol_list.count()):
+            item = self.symbol_list.item(idx)
+            if item.checkState() == QtCore.Qt.CheckState.Checked:
+                selected.append(item.text())
+        return selected
+
+    def _simulate_market_snapshot(self, symbol: str) -> MarketSnapshot:
+        base = 30000 if symbol == "BTCUSDT" else 2000 if symbol == "ETHUSDT" else 100
+        mid = base + random.uniform(-1, 1) * base * 0.001
+        spread = random.uniform(0.02, 0.08) * base * 0.001
+        bid = mid - spread / 2
+        ask = mid + spread / 2
+        bid_size = random.uniform(10, 80)
+        ask_size = random.uniform(10, 80)
+        imbalance = (bid_size - ask_size) / max(bid_size + ask_size, 1e-9)
+        volatility = random.uniform(0.3, 2.5)
+        return MarketSnapshot(
+            symbol=symbol,
+            mid=mid,
+            bid=bid,
+            ask=ask,
+            bid_size=bid_size,
+            ask_size=ask_size,
+            volatility=volatility,
+            imbalance=imbalance,
+        )
+
+    def _apply_strategy(self, snapshot: MarketSnapshot, fee_buffer: float) -> None:
+        position = self.positions.get(snapshot.symbol, PositionState(symbol=snapshot.symbol))
+        use_maker = self.maker_mode_checkbox.isChecked()
+        required_edge = self.strategy.required_edge(use_maker, fee_buffer)
+        momentum = snapshot.volatility * snapshot.imbalance
+
+        if position.qty != 0:
+            self._check_exit(snapshot, position)
+            self.positions[snapshot.symbol] = position
+            return
+
+        if abs(momentum) > required_edge:
+            direction = 1 if momentum > 0 else -1
+            entry = snapshot.ask if direction > 0 else snapshot.bid
+            position.qty = direction * (self.position_size_input.value() / snapshot.mid)
+            position.entry_price = entry
+            tp_pct = self.tp_input.value() / 100
+            sl_pct = self.sl_input.value() / 100
+            position.tp_price = entry * (1 + tp_pct * direction)
+            position.sl_price = entry * (1 - sl_pct * direction)
+            self.positions[snapshot.symbol] = position
+            logging.info(
+                "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
+                snapshot.symbol,
+                "LONG" if direction > 0 else "SHORT",
+                entry,
+                position.tp_price,
+                position.sl_price,
+            )
+            return
+
+        if use_maker:
+            quote_bid, quote_ask = self.strategy.compute_quotes(
+                snapshot.bid,
+                snapshot.ask,
+                snapshot.bid_size,
+                snapshot.ask_size,
+                risk_skew=self.risk_skew_input.value(),
+                spread_multiplier=self.spread_multiplier_input.value(),
+            )
+            logging.info(
+                "%s maker quotes bid=%.2f ask=%.2f (imbalance %.2f)",
+                snapshot.symbol,
+                quote_bid,
+                quote_ask,
+                snapshot.imbalance,
+            )
+
+    def _check_exit(self, snapshot: MarketSnapshot, position: PositionState) -> None:
+        if position.qty == 0:
+            return
+        direction = 1 if position.qty > 0 else -1
+        hit_tp = snapshot.mid >= position.tp_price if direction > 0 else snapshot.mid <= position.tp_price
+        hit_sl = snapshot.mid <= position.sl_price if direction > 0 else snapshot.mid >= position.sl_price
+        if hit_tp or hit_sl:
+            exit_price = snapshot.bid if direction > 0 else snapshot.ask
+            pnl = (exit_price - position.entry_price) * position.qty
+            logging.info(
+                "%s exit %s @ %.2f P&L %.2f",
+                snapshot.symbol,
+                "TP" if hit_tp else "SL",
+                exit_price,
+                pnl,
+            )
+            position.qty = 0
+            position.entry_price = 0.0
+            position.tp_price = 0.0
+            position.sl_price = 0.0
 
 
 def main() -> None:
