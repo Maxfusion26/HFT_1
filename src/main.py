@@ -54,6 +54,7 @@ class PositionState:
     tp_price: float = 0.0
     sl_price: float = 0.0
     last_update: datetime = datetime.utcnow()
+    position_idx: Optional[int] = None
 
 
 @dataclass
@@ -76,6 +77,7 @@ class PositionSnapshot:
     size: float
     entry_price: float
     unrealized_pnl: float
+    position_idx: Optional[int] = None
 
 
 class ConfigManager:
@@ -1174,12 +1176,18 @@ class TradingApp(QtWidgets.QMainWindow):
             unrealized = float(unrealized_raw or 0)
         except (TypeError, ValueError):
             unrealized = 0.0
+        position_idx_raw = item.get("positionIdx")
+        try:
+            position_idx = int(position_idx_raw) if position_idx_raw is not None else None
+        except (TypeError, ValueError):
+            position_idx = None
         return PositionSnapshot(
             symbol=symbol,
             side=side,
             size=size,
             entry_price=entry_price,
             unrealized_pnl=unrealized,
+            position_idx=position_idx,
         )
 
     def _render_portfolio_table(self) -> None:
@@ -1228,12 +1236,18 @@ class TradingApp(QtWidgets.QMainWindow):
             net_pct = gross_pct - (taker_fee * 2)
             if net_pct >= tp_pct or net_pct <= -sl_pct:
                 close_side = "Sell" if direction > 0 else "Buy"
+                position_idx = (
+                    position.position_idx
+                    if position.position_idx is not None
+                    else self._resolve_position_idx(position.side)
+                )
                 self._place_order(
                     position.symbol,
                     close_side,
                     position.size,
                     price=last_price,
                     reduce_only=True,
+                    position_idx_override=position_idx,
                 )
 
     def _run_backtest(self) -> None:
@@ -1339,12 +1353,15 @@ class TradingApp(QtWidgets.QMainWindow):
             sl_pct = self.sl_input.value() / 100
             position.tp_price = entry * (1 + tp_pct * direction)
             position.sl_price = entry * (1 - sl_pct * direction)
+            position_idx = self._resolve_position_idx("Buy" if direction > 0 else "Sell")
+            position.position_idx = position_idx
             self.positions[snapshot.symbol] = position
             self._place_order(
                 snapshot.symbol,
                 "Buy" if direction > 0 else "Sell",
                 abs(position.qty),
                 price=entry,
+                position_idx_override=position_idx,
             )
             logging.info(
                 "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
@@ -1383,6 +1400,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position.entry_price = 0.0
             position.tp_price = 0.0
             position.sl_price = 0.0
+            position.position_idx = None
             self.positions[snapshot.symbol] = position
             logging.warning("Local position cleared (not on exchange): %s", snapshot.symbol)
             return
@@ -1392,12 +1410,19 @@ class TradingApp(QtWidgets.QMainWindow):
         if hit_tp or hit_sl:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
+            position_side = "Buy" if direction > 0 else "Sell"
+            position_idx = (
+                position.position_idx
+                if position.position_idx is not None
+                else self._resolve_position_idx(position_side)
+            )
             self._place_order(
                 snapshot.symbol,
                 "Sell" if direction > 0 else "Buy",
                 abs(position.qty),
                 price=exit_price,
                 reduce_only=True,
+                position_idx_override=position_idx,
             )
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
@@ -1410,6 +1435,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position.entry_price = 0.0
             position.tp_price = 0.0
             position.sl_price = 0.0
+            position.position_idx = None
 
     def _count_open_positions(self) -> int:
         if self.open_positions:
@@ -1426,6 +1452,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 position.entry_price = 0.0
                 position.tp_price = 0.0
                 position.sl_price = 0.0
+                position.position_idx = None
                 self.positions[symbol] = position
                 logging.warning("Synced local position to exchange: %s cleared", symbol)
 
@@ -1442,6 +1469,7 @@ class TradingApp(QtWidgets.QMainWindow):
         qty: float,
         price: Optional[float] = None,
         reduce_only: bool = False,
+        position_idx_override: Optional[int] = None,
     ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
@@ -1465,7 +1493,11 @@ class TradingApp(QtWidgets.QMainWindow):
             else:
                 logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
-        position_idx = self._resolve_position_idx(side)
+        position_idx = (
+            position_idx_override
+            if position_idx_override is not None
+            else self._resolve_position_idx(side)
+        )
         order_type = self.order_type_input.currentText()
         limit_price = None
         if order_type == "Limit":
@@ -1549,6 +1581,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     position.entry_price = 0.0
                     position.tp_price = 0.0
                     position.sl_price = 0.0
+                    position.position_idx = None
                     self.positions[request.symbol] = position
                     logging.warning(
                         "Reset local position state after rejected entry: %s %s %.6f",
