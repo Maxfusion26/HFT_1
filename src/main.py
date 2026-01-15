@@ -490,8 +490,8 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("Bybit Futures HFT Suite")
@@ -520,13 +520,13 @@ class TradingApp(QtWidgets.QMainWindow):
         left_panel.setProperty("panel", "true")
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(14)
+        left_layout.setSpacing(10)
 
         right_panel = QtWidgets.QWidget()
         right_panel.setProperty("panel", "true")
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(14)
+        right_layout.setSpacing(10)
 
         creds_group = QtWidgets.QGroupBox("Credentials")
         creds_group.setProperty("card", "true")
@@ -551,8 +551,8 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_group = QtWidgets.QGroupBox("Trading Controls")
         controls_group.setProperty("card", "true")
         controls_layout = QtWidgets.QGridLayout(controls_group)
-        controls_layout.setHorizontalSpacing(10)
-        controls_layout.setVerticalSpacing(6)
+        controls_layout.setHorizontalSpacing(8)
+        controls_layout.setVerticalSpacing(4)
         controls_layout.setColumnStretch(1, 1)
         controls_layout.setColumnStretch(3, 1)
         controls_layout.setColumnStretch(5, 1)
@@ -835,28 +835,28 @@ class TradingApp(QtWidgets.QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow { background: #0b0f1a; }
-            QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
-            QLabel[role="title"] { font-size: 18px; font-weight: 600; color: #f8fafc; letter-spacing: 0.2px; }
-            QLabel[role="subtitle"] { font-size: 11px; color: #94a3b8; }
+            QLabel, QCheckBox { color: #e6edf3; font-size: 12.5px; }
+            QLabel[role="title"] { font-size: 19px; font-weight: 600; color: #f8fafc; letter-spacing: 0.2px; }
+            QLabel[role="subtitle"] { font-size: 11.5px; color: #94a3b8; }
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 10px; background: #0f1422; padding: 12px; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 8px; background: #0f1422; padding: 10px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; font-weight: 600; }
             QGroupBox[card="true"] { background: #0f172a; }
-            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 14px; padding: 8px; }
+            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 6px; }
             QFrame[divider="true"] { color: #1f2937; background: #1f2937; min-height: 1px; max-height: 1px; }
             QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 16px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; min-height: 28px; }
-            QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { width: 18px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; min-height: 30px; }
+            QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { width: 20px; }
             QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow { width: 10px; height: 10px; }
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; alternate-background-color: #0f172a; }
-            QTableWidget::item { padding: 4px; }
-            QTableWidget[role="positions"]::item { font-weight: 600; }
-            QHeaderView::section { background: #111827; color: #94a3b8; padding: 7px; border: none; font-weight: 600; }
+            QTableWidget::item { padding: 5px; }
+            QTableWidget[role="positions"]::item { font-weight: 600; font-size: 12.5px; }
+            QHeaderView::section { background: #111827; color: #94a3b8; padding: 8px; border: none; font-weight: 600; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
             QTabBar::tab { background: #111827; color: #94a3b8; padding: 7px 14px; border-radius: 10px; margin-right: 6px; min-width: 120px; }
