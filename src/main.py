@@ -777,9 +777,18 @@ class TradingApp(QtWidgets.QMainWindow):
         summary_layout.addWidget(self.unrealized_label, 1, 0)
         summary_layout.addWidget(self.open_positions_label, 1, 1)
 
-        self.positions_table = QtWidgets.QTableWidget(0, 6)
+        self.positions_table = QtWidgets.QTableWidget(0, 8)
         self.positions_table.setHorizontalHeaderLabels(
-            ["Symbol", "Side", "Size", "Entry", "Unrealized PnL", "TP Price"]
+            [
+                "Symbol",
+                "Side",
+                "Size",
+                "Entry",
+                "Unrealized PnL",
+                "Current Price",
+                "TP Price",
+                "SL Price",
+            ]
         )
         self.positions_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
@@ -1190,21 +1199,35 @@ class TradingApp(QtWidgets.QMainWindow):
         )
 
     def _render_portfolio_table(self) -> None:
-        self.positions_table.setColumnCount(6)
+        self.positions_table.setColumnCount(8)
         self.positions_table.setHorizontalHeaderLabels(
-            ["Symbol", "Side", "Size", "Entry", "Unrealized PnL", "TP Price"]
+            [
+                "Symbol",
+                "Side",
+                "Size",
+                "Entry",
+                "Unrealized PnL",
+                "Current Price",
+                "TP Price",
+                "SL Price",
+            ]
         )
         self.positions_table.setRowCount(len(self.open_positions))
         tp_pct = self.tp_input.value() / 100
+        sl_pct = self.sl_input.value() / 100
         for row, position in enumerate(self.open_positions):
             self.positions_table.setItem(row, 0, QtWidgets.QTableWidgetItem(position.symbol))
             self.positions_table.setItem(row, 1, QtWidgets.QTableWidgetItem(position.side))
             self.positions_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{position.size:.6f}"))
             self.positions_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{position.entry_price:.4f}"))
             self.positions_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{position.unrealized_pnl:.2f}"))
+            last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
+            self.positions_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{last_price:.4f}"))
             direction = 1 if position.side.lower() == "buy" else -1
             tp_price = position.entry_price * (1 + (tp_pct * direction))
-            self.positions_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
+            sl_price = position.entry_price * (1 - (sl_pct * direction))
+            self.positions_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
+            self.positions_table.setItem(row, 7, QtWidgets.QTableWidgetItem(f"{sl_price:.4f}"))
         self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
 
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
