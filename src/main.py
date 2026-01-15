@@ -853,8 +853,9 @@ class TradingApp(QtWidgets.QMainWindow):
             if limit_price <= 0 and price is not None:
                 limit_price = price
             if limit_price is None or limit_price <= 0:
-                logging.error("Limit price must be greater than 0.")
-                return
+                logging.warning("Limit price missing; falling back to Market order.")
+                order_type = "Market"
+                limit_price = None
         try:
             response = self._send_order(
                 symbol,
