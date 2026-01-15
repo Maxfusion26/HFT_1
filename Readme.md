@@ -9,7 +9,7 @@ logging, and a backtesting dashboard.
 - Connect/Disconnect and Auto Trading toggles.
 - Market-making mode with imbalance skew controls and fee-aware thresholds.
 - TP/SL controls (no timeout-based exits).
-- Multi-symbol scoring table plus auto-select top N symbols.
+- Multi-symbol scoring table plus auto-select top N symbols (always-on).
 - Backtesting simulator and P&L dashboard placeholder with fee buffer.
 - File + UI logging.
 
@@ -19,5 +19,6 @@ python src/main.py
 ```
 
 ## Notes
-- This is a scaffold/prototype. Live Bybit API integration should be added where noted.
+- This prototype can send live orders via Bybit REST API (configure key/secret and base URL).
+- Requires `requests` for REST calls.
 - Fee assumptions: default UI values are 0.06% taker / 0.01% maker with an extra fee buffer.

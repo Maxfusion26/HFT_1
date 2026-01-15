@@ -2,12 +2,16 @@ import json
 import logging
 import random
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtWidgets
+import requests
 
 
 CONFIG_DIR = Path.home() / ".hft_bybit"
@@ -65,6 +69,36 @@ class ConfigManager:
     def save(self, data: dict) -> None:
         self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+
+class BybitRestClient:
+    def __init__(self, api_key: str, api_secret: str, base_url: str) -> None:
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = base_url.rstrip("/")
+
+    def _sign(self, params: dict) -> str:
+        sorted_items = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        payload = f"{self.api_key}{sorted_items}{self.api_secret}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def create_order(self, symbol: str, side: str, qty: float, order_type: str = "Market") -> dict:
+        endpoint = "/v5/order/create"
+        timestamp = str(int(time.time() * 1000))
+        params = {
+            "api_key": self.api_key,
+            "symbol": symbol,
+            "side": side,
+            "orderType": order_type,
+            "qty": f"{qty:.6f}",
+            "category": "linear",
+            "timeInForce": "GTC",
+            "timestamp": timestamp,
+            "orderLinkId": str(uuid.uuid4()),
+        }
+        params["sign"] = self._sign(params)
+        response = requests.post(f"{self.base_url}{endpoint}", json=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
 
 class QtLogHandler(logging.Handler):
     def __init__(self, widget: QtWidgets.QTextEdit) -> None:
@@ -153,6 +187,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.config = ConfigManager(CONFIG_FILE)
         self.strategy = HFTStrategy()
         self.backtest_engine = BacktestEngine(self.strategy)
+        self.client: Optional[BybitRestClient] = None
+        self.connected = False
         self.positions: Dict[str, PositionState] = {}
         self.symbol_metrics: List[SymbolMetrics] = []
         self.trading_timer = QtCore.QTimer(self)
@@ -189,13 +225,16 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_key_input = QtWidgets.QLineEdit()
         self.api_secret_input = QtWidgets.QLineEdit()
         self.api_secret_input.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        self.api_base_url_input = QtWidgets.QLineEdit("https://api.bybit.com")
         self.auto_save_checkbox = QtWidgets.QCheckBox("Auto-save")
 
         creds_layout.addWidget(QtWidgets.QLabel("API Key"), 0, 0)
         creds_layout.addWidget(self.api_key_input, 0, 1)
         creds_layout.addWidget(QtWidgets.QLabel("API Secret"), 1, 0)
         creds_layout.addWidget(self.api_secret_input, 1, 1)
-        creds_layout.addWidget(self.auto_save_checkbox, 2, 0, 1, 2)
+        creds_layout.addWidget(QtWidgets.QLabel("Base URL"), 2, 0)
+        creds_layout.addWidget(self.api_base_url_input, 2, 1)
+        creds_layout.addWidget(self.auto_save_checkbox, 3, 0, 1, 2)
 
         controls_group = QtWidgets.QGroupBox("Trading Controls")
         controls_layout = QtWidgets.QGridLayout(controls_group)
@@ -217,6 +256,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.top_n_input.setValue(3)
 
         self.auto_select_checkbox = QtWidgets.QCheckBox("Auto-select top symbols")
+        self.auto_select_checkbox.setChecked(True)
+        self.auto_select_checkbox.setEnabled(False)
         self.auto_select_interval = QtWidgets.QSpinBox()
         self.auto_select_interval.setRange(5, 600)
         self.auto_select_interval.setValue(60)
@@ -363,6 +404,7 @@ class TradingApp(QtWidgets.QMainWindow):
         data = self.config.load()
         self.api_key_input.setText(data.get("api_key", ""))
         self.api_secret_input.setText(data.get("api_secret", ""))
+        self.api_base_url_input.setText(data.get("base_url", "https://api.bybit.com"))
         self.auto_save_checkbox.setChecked(data.get("auto_save", False))
 
     def _setup_logging(self) -> None:
@@ -384,6 +426,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.auto_save_checkbox.toggled.connect(self._persist_config)
         self.api_key_input.textChanged.connect(self._persist_config)
         self.api_secret_input.textChanged.connect(self._persist_config)
+        self.api_base_url_input.textChanged.connect(self._persist_config)
         self.auto_select_button.clicked.connect(self._refresh_symbol_table)
         self.auto_select_checkbox.toggled.connect(self._toggle_auto_select)
         self.trading_timer.timeout.connect(self._run_trading_cycle)
@@ -396,15 +439,26 @@ class TradingApp(QtWidgets.QMainWindow):
         data = {
             "api_key": self.api_key_input.text().strip(),
             "api_secret": self.api_secret_input.text().strip(),
+            "base_url": self.api_base_url_input.text().strip(),
             "auto_save": self.auto_save_checkbox.isChecked(),
         }
         self.config.save(data)
 
     def _connect(self) -> None:
-        logging.info("Connecting to Bybit futures API (stub)")
+        api_key = self.api_key_input.text().strip()
+        api_secret = self.api_secret_input.text().strip()
+        base_url = self.api_base_url_input.text().strip() or "https://api.bybit.com"
+        if not api_key or not api_secret:
+            logging.error("API key/secret required to connect.")
+            return
+        self.client = BybitRestClient(api_key, api_secret, base_url)
+        self.connected = True
+        logging.info("Connected to Bybit futures API at %s", base_url)
 
     def _disconnect(self) -> None:
-        logging.info("Disconnecting from Bybit futures API (stub)")
+        self.client = None
+        self.connected = False
+        logging.info("Disconnected from Bybit futures API")
 
     def _toggle_auto_trading(self, enabled: bool) -> None:
         if enabled:
@@ -517,14 +571,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self._apply_strategy(snapshot, fee_buffer)
 
     def _get_active_symbols(self) -> List[str]:
-        if self.auto_select_checkbox.isChecked():
-            return [metric.symbol for metric in self.symbol_metrics[: self.top_n_input.value()]]
-        selected = []
-        for idx in range(self.symbol_list.count()):
-            item = self.symbol_list.item(idx)
-            if item.checkState() == QtCore.Qt.CheckState.Checked:
-                selected.append(item.text())
-        return selected
+        return [metric.symbol for metric in self.symbol_metrics[: self.top_n_input.value()]]
 
     def _simulate_market_snapshot(self, symbol: str) -> MarketSnapshot:
         base = 30000 if symbol == "BTCUSDT" else 2000 if symbol == "ETHUSDT" else 100
@@ -568,6 +615,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position.tp_price = entry * (1 + tp_pct * direction)
             position.sl_price = entry * (1 - sl_pct * direction)
             self.positions[snapshot.symbol] = position
+            self._place_order(snapshot.symbol, "Buy" if direction > 0 else "Sell", abs(position.qty))
             logging.info(
                 "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
                 snapshot.symbol,
@@ -604,6 +652,7 @@ class TradingApp(QtWidgets.QMainWindow):
         if hit_tp or hit_sl:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
+            self._place_order(snapshot.symbol, "Sell" if direction > 0 else "Buy", abs(position.qty))
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
                 snapshot.symbol,
@@ -615,6 +664,16 @@ class TradingApp(QtWidgets.QMainWindow):
             position.entry_price = 0.0
             position.tp_price = 0.0
             position.sl_price = 0.0
+
+    def _place_order(self, symbol: str, side: str, qty: float) -> None:
+        if not self.connected or not self.client:
+            logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
+            return
+        try:
+            response = self.client.create_order(symbol=symbol, side=side, qty=qty)
+            logging.info("Order sent: %s %s %.6f -> %s", side, symbol, qty, response)
+        except requests.RequestException as exc:
+            logging.error("Order failed: %s", exc)
 
 
 def main() -> None:
