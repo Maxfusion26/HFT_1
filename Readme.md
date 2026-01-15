@@ -22,5 +22,5 @@ python src/main.py
 - This prototype can send live orders via Bybit REST API (configure key/secret and base URL).
 - Requires `requests` for REST calls.
 - Order sizes are normalized to per-symbol step sizes to avoid invalid quantity errors.
-- Select the correct position mode (one-way vs hedge) to match your Bybit account settings.
+- Position mode can auto-detect from your account; override manually if needed.
 - Fee assumptions: default UI values are 0.06% taker / 0.01% maker with an extra fee buffer.

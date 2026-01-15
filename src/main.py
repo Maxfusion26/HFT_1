@@ -118,6 +118,33 @@ class BybitRestClient:
         response.raise_for_status()
         return response.json()
 
+    def fetch_position_mode(self) -> Optional[str]:
+        endpoint = "/v5/position/list"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        params = {"category": "linear"}
+        query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        signature = self._sign(timestamp, recv_window, query)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+        }
+        response = requests.get(
+            f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return None
+        positions = payload.get("result", {}).get("list", [])
+        for position in positions:
+            if position.get("positionIdx") in (1, 2):
+                return "hedge"
+        return "one-way"
+
 class QtLogHandler(logging.Handler):
     def __init__(self, widget: QtWidgets.QTextEdit) -> None:
         super().__init__()
@@ -201,12 +228,13 @@ class TradingApp(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("HFT Bybit Futures - Adaptive Market Maker")
-        self.resize(1100, 720)
+        self.resize(980, 660)
         self.config = ConfigManager(CONFIG_FILE)
         self.strategy = HFTStrategy()
         self.backtest_engine = BacktestEngine(self.strategy)
         self.client: Optional[BybitRestClient] = None
         self.connected = False
+        self.position_mode_detected: Optional[str] = None
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01},
@@ -243,9 +271,13 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         creds_group = QtWidgets.QGroupBox("API Keys")
         creds_layout = QtWidgets.QGridLayout(creds_group)
+        creds_layout.setHorizontalSpacing(8)
+        creds_layout.setVerticalSpacing(6)
 
         self.api_key_input = QtWidgets.QLineEdit()
         self.api_secret_input = QtWidgets.QLineEdit()
@@ -263,6 +295,8 @@ class TradingApp(QtWidgets.QMainWindow):
 
         controls_group = QtWidgets.QGroupBox("Trading Controls")
         controls_layout = QtWidgets.QGridLayout(controls_group)
+        controls_layout.setHorizontalSpacing(8)
+        controls_layout.setVerticalSpacing(6)
 
         self.connect_button = QtWidgets.QPushButton("Connect")
         self.disconnect_button = QtWidgets.QPushButton("Disconnect")
@@ -305,7 +339,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.risk_skew_input.setValue(0.15)
 
         self.position_mode_input = QtWidgets.QComboBox()
-        self.position_mode_input.addItems(["One-way (posIdx 0)", "Hedge (posIdx 1/2)"])
+        self.position_mode_input.addItems(
+            ["Auto-detect", "One-way (posIdx 0)", "Hedge (posIdx 1/2)"]
+        )
 
         self.spread_multiplier_input = QtWidgets.QDoubleSpinBox()
         self.spread_multiplier_input.setRange(1.0, 5.0)
@@ -366,12 +402,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.symbol_table.horizontalHeader().setSectionResizeMode(
             QtWidgets.QHeaderView.ResizeMode.Stretch
         )
+        self.symbol_table.setMinimumHeight(140)
 
         self.auto_select_button = QtWidgets.QPushButton("Refresh symbols")
 
         self.symbol_list = QtWidgets.QListWidget()
         self.symbol_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
-        self.symbol_list.setMinimumHeight(120)
+        self.symbol_list.setMinimumHeight(100)
 
         self.log_output = QtWidgets.QTextEdit()
         self.log_output.setReadOnly(True)
@@ -417,17 +454,17 @@ class TradingApp(QtWidgets.QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow { background: #0b0f1a; }
-            QLabel, QCheckBox { color: #e6edf3; font-size: 13px; }
-            QGroupBox { border: 1px solid #202634; border-radius: 12px; margin-top: 14px; background: #0f1422; }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #8b949e; }
-            QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1f6feb); color: white; border-radius: 10px; padding: 8px 18px; }
+            QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
+            QGroupBox { border: 1px solid #202634; border-radius: 10px; margin-top: 10px; background: #0f1422; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #8b949e; }
+            QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1f6feb); color: white; border-radius: 8px; padding: 6px 14px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 7px; border-radius: 8px; }
-            QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 5px; border-radius: 7px; }
+            QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 8px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; }
-            QHeaderView::section { background: #0f172a; color: #94a3b8; padding: 6px; border: none; }
-            QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
+            QHeaderView::section { background: #0f172a; color: #94a3b8; padding: 4px; border: none; }
+            QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 8px; }
             """
         )
 
@@ -484,11 +521,13 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.client = BybitRestClient(api_key, api_secret, base_url)
         self.connected = True
+        self.position_mode_detected = self._detect_position_mode()
         logging.info("Connected to Bybit futures API at %s", base_url)
 
     def _disconnect(self) -> None:
         self.client = None
         self.connected = False
+        self.position_mode_detected = None
         logging.info("Disconnected from Bybit futures API")
 
     def _toggle_auto_trading(self, enabled: bool) -> None:
@@ -705,6 +744,9 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
         position_idx = self._resolve_position_idx(side)
+        if position_idx is None:
+            logging.error("Order blocked: could not resolve position mode (check settings).")
+            return
         try:
             response = self.client.create_order(
                 symbol=symbol,
@@ -721,10 +763,31 @@ class TradingApp(QtWidgets.QMainWindow):
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
 
-    def _resolve_position_idx(self, side: str) -> int:
-        if self.position_mode_input.currentIndex() == 0:
+    def _resolve_position_idx(self, side: str) -> Optional[int]:
+        selection = self.position_mode_input.currentIndex()
+        if selection == 1:
             return 0
-        return 1 if side == "Buy" else 2
+        if selection == 2:
+            return 1 if side == "Buy" else 2
+        if self.position_mode_detected == "one-way":
+            return 0
+        if self.position_mode_detected == "hedge":
+            return 1 if side == "Buy" else 2
+        return None
+
+    def _detect_position_mode(self) -> Optional[str]:
+        if not self.client:
+            return None
+        try:
+            mode = self.client.fetch_position_mode()
+            if mode:
+                logging.info("Detected position mode: %s", mode)
+            else:
+                logging.warning("Position mode detection failed.")
+            return mode
+        except requests.RequestException as exc:
+            logging.error("Position mode detection error: %s", exc)
+            return None
 
     def _normalize_qty(self, symbol: str, qty: float) -> Optional[float]:
         specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001})
