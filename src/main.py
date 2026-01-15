@@ -64,6 +64,7 @@ class OrderRequest:
     position_idx: int
     order_type: str
     limit_price: Optional[float]
+    reduce_only: bool = False
     retry: int = 0
     remaining_qty: Optional[float] = None
 
@@ -117,6 +118,7 @@ class BybitRestClient:
         order_type: str = "Market",
         position_idx: int = 0,
         price: Optional[float] = None,
+        reduce_only: bool = False,
     ) -> dict:
         endpoint = "/v5/order/create"
         timestamp = str(int(time.time() * 1000))
@@ -131,6 +133,8 @@ class BybitRestClient:
             "orderLinkId": str(uuid.uuid4()),
             "positionIdx": position_idx,
         }
+        if reduce_only:
+            payload["reduceOnly"] = True
         if order_type == "Limit":
             if price is None:
                 raise ValueError("Limit orders require a price.")
@@ -296,6 +300,7 @@ class OrderThread(QtCore.QThread):
                 position_idx=self.request.position_idx,
                 order_type=self.request.order_type,
                 price=self.request.limit_price,
+                reduce_only=self.request.reduce_only,
             )
             self.finished.emit(self.request, response, None)
         except Exception as exc:  # noqa: BLE001
@@ -1219,6 +1224,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     close_side,
                     position.size,
                     price=last_price,
+                    reduce_only=True,
                 )
 
     def _run_backtest(self) -> None:
@@ -1369,6 +1375,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 "Sell" if direction > 0 else "Buy",
                 abs(position.qty),
                 price=exit_price,
+                reduce_only=True,
             )
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
@@ -1387,7 +1394,14 @@ class TradingApp(QtWidgets.QMainWindow):
             return len(self.open_positions)
         return sum(1 for pos in self.positions.values() if pos.qty != 0)
 
-    def _place_order(self, symbol: str, side: str, qty: float, price: Optional[float] = None) -> None:
+    def _place_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        reduce_only: bool = False,
+    ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
             return
@@ -1445,6 +1459,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position_idx=position_idx,
             order_type=order_type,
             limit_price=limit_price,
+            reduce_only=reduce_only,
             remaining_qty=normalized_qty if order_type == "Limit" else None,
         )
         self._dispatch_order(request)
@@ -1479,6 +1494,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 position_idx=fallback_idx,
                 order_type=request.order_type,
                 limit_price=request.limit_price,
+                reduce_only=request.reduce_only,
                 retry=1,
             )
             self._dispatch_order(retry_request)
@@ -1517,6 +1533,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     position_idx=request.position_idx,
                     order_type=request.order_type,
                     limit_price=request.limit_price,
+                    reduce_only=request.reduce_only,
                     retry=request.retry + 1,
                     remaining_qty=remaining,
                 )
