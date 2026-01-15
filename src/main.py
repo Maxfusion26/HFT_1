@@ -81,7 +81,14 @@ class BybitRestClient:
         message = f"{timestamp}{self.api_key}{recv_window}{payload}"
         return hmac.new(self.api_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    def create_order(self, symbol: str, side: str, qty: float, order_type: str = "Market") -> dict:
+    def create_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        order_type: str = "Market",
+        position_idx: int = 0,
+    ) -> dict:
         endpoint = "/v5/order/create"
         timestamp = str(int(time.time() * 1000))
         recv_window = "5000"
@@ -93,6 +100,7 @@ class BybitRestClient:
             "category": "linear",
             "timeInForce": "GTC",
             "orderLinkId": str(uuid.uuid4()),
+            "positionIdx": position_idx,
         }
         payload_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         signature = self._sign(timestamp, recv_window, payload_str)
@@ -296,6 +304,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.risk_skew_input.setSingleStep(0.05)
         self.risk_skew_input.setValue(0.15)
 
+        self.position_mode_input = QtWidgets.QComboBox()
+        self.position_mode_input.addItems(["One-way (posIdx 0)", "Hedge (posIdx 1/2)"])
+
         self.spread_multiplier_input = QtWidgets.QDoubleSpinBox()
         self.spread_multiplier_input.setRange(1.0, 5.0)
         self.spread_multiplier_input.setValue(1.2)
@@ -334,6 +345,8 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.risk_skew_input, 3, 2)
         controls_layout.addWidget(QtWidgets.QLabel("Spread"), 3, 3)
         controls_layout.addWidget(self.spread_multiplier_input, 3, 4)
+        controls_layout.addWidget(QtWidgets.QLabel("Position mode"), 3, 5)
+        controls_layout.addWidget(self.position_mode_input, 3, 6)
         controls_layout.addWidget(QtWidgets.QLabel("Maker fee"), 4, 0)
         controls_layout.addWidget(self.maker_fee_input, 4, 1)
         controls_layout.addWidget(QtWidgets.QLabel("Taker fee"), 4, 2)
@@ -691,8 +704,14 @@ class TradingApp(QtWidgets.QMainWindow):
         if normalized_qty is None:
             logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
+        position_idx = self._resolve_position_idx(side)
         try:
-            response = self.client.create_order(symbol=symbol, side=side, qty=normalized_qty)
+            response = self.client.create_order(
+                symbol=symbol,
+                side=side,
+                qty=normalized_qty,
+                position_idx=position_idx,
+            )
             ret_code = response.get("retCode")
             ret_msg = response.get("retMsg")
             if ret_code != 0:
@@ -701,6 +720,11 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.info("Order sent: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
+
+    def _resolve_position_idx(self, side: str) -> int:
+        if self.position_mode_input.currentIndex() == 0:
+            return 0
+        return 1 if side == "Buy" else 2
 
     def _normalize_qty(self, symbol: str, qty: float) -> Optional[float]:
         specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001})
