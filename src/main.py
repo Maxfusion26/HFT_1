@@ -1232,16 +1232,23 @@ class TradingApp(QtWidgets.QMainWindow):
             sl_price = position.entry_price * (1 - (sl_pct * direction))
             self.positions_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
             self.positions_table.setItem(row, 7, QtWidgets.QTableWidgetItem(f"{sl_price:.4f}"))
-            if position.unrealized_pnl != 0:
-                row_color = (
-                    QtGui.QColor(34, 197, 94, 70)
+            side_color = (
+                QtGui.QColor(34, 197, 94, 70)
+                if position.side.lower() == "buy"
+                else QtGui.QColor(239, 68, 68, 70)
+            )
+            for column in range(self.positions_table.columnCount()):
+                item = self.positions_table.item(row, column)
+                if item is not None:
+                    item.setBackground(side_color)
+            pnl_item = self.positions_table.item(row, 4)
+            if pnl_item is not None and position.unrealized_pnl != 0:
+                pnl_color = (
+                    QtGui.QColor(34, 197, 94)
                     if position.unrealized_pnl > 0
-                    else QtGui.QColor(239, 68, 68, 70)
+                    else QtGui.QColor(239, 68, 68)
                 )
-                for column in range(self.positions_table.columnCount()):
-                    item = self.positions_table.item(row, column)
-                    if item is not None:
-                        item.setBackground(row_color)
+                pnl_item.setForeground(pnl_color)
         self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
 
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
