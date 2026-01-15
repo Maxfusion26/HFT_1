@@ -1292,6 +1292,9 @@ class TradingApp(QtWidgets.QMainWindow):
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
         momentum = snapshot.volatility * snapshot.imbalance
 
+        if self._has_open_position(snapshot.symbol):
+            return
+
         if position.qty != 0:
             self._check_exit(snapshot, position)
             self.positions[snapshot.symbol] = position
@@ -1393,6 +1396,12 @@ class TradingApp(QtWidgets.QMainWindow):
         if self.open_positions:
             return len(self.open_positions)
         return sum(1 for pos in self.positions.values() if pos.qty != 0)
+
+    def _has_open_position(self, symbol: str) -> bool:
+        if self.open_positions:
+            return any(position.symbol == symbol for position in self.open_positions)
+        position = self.positions.get(symbol)
+        return bool(position and position.qty != 0)
 
     def _place_order(
         self,
