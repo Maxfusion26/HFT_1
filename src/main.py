@@ -434,7 +434,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_last_price_map: Dict[str, float] = {}
         self.selected_symbols: List[str] = []
         self._updating_symbol_list = False
-        self.open_positions: Dict[str, PositionSnapshot] = {}
+        self.open_positions: List[PositionSnapshot] = []
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(2000)
         self.symbol_specs = {
@@ -939,7 +939,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = {}
         self.ticker_last_price_map = {}
         self.instrument_specs_ready = False
-        self.open_positions = {}
+        self.open_positions = []
         self.portfolio_timer.stop()
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
@@ -1113,32 +1113,61 @@ class TradingApp(QtWidgets.QMainWindow):
         self._update_portfolio(balance, positions)
 
     def _update_portfolio(self, balance: dict, positions: list) -> None:
-        self.open_positions = {}
+        self.open_positions = []
         total_unrealized = 0.0
         for item in positions:
-            size = float(item.get("size", 0) or 0)
-            if size == 0:
+            snapshot = self._parse_portfolio_position(item)
+            if snapshot is None:
                 continue
-            symbol = item.get("symbol", "")
-            side = item.get("side", "")
-            entry_price = float(item.get("avgPrice", 0) or 0)
-            unrealized = float(item.get("unrealisedPnl", 0) or 0)
-            self.open_positions[symbol] = PositionSnapshot(
-                symbol=symbol,
-                side=side,
-                size=size,
-                entry_price=entry_price,
-                unrealized_pnl=unrealized,
-            )
-            total_unrealized += unrealized
+            self.open_positions.append(snapshot)
+            total_unrealized += snapshot.unrealized_pnl
 
         self._render_portfolio_table()
         self._render_balance_summary(balance, total_unrealized)
         self._monitor_positions_for_exit()
 
+    def _parse_portfolio_position(self, item: dict) -> Optional[PositionSnapshot]:
+        symbol = item.get("symbol") or item.get("symbolName")
+        if not symbol:
+            return None
+        raw_size = item.get("size")
+        if raw_size is None:
+            raw_size = item.get("positionAmt") or item.get("qty") or item.get("positionSize")
+        try:
+            size = float(raw_size or 0)
+        except (TypeError, ValueError):
+            size = 0.0
+        if size == 0:
+            return None
+        side = item.get("side") or ""
+        if not side:
+            side = "Buy" if size > 0 else "Sell"
+        size = abs(size)
+        entry_raw = item.get("avgPrice")
+        if entry_raw is None:
+            entry_raw = item.get("entryPrice") or item.get("avgEntryPrice")
+        try:
+            entry_price = float(entry_raw or 0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+        unrealized_raw = item.get("unrealisedPnl")
+        if unrealized_raw is None:
+            unrealized_raw = item.get("unrealizedPnl") or item.get("unrealisedPNL")
+        try:
+            unrealized = float(unrealized_raw or 0)
+        except (TypeError, ValueError):
+            unrealized = 0.0
+        return PositionSnapshot(
+            symbol=symbol,
+            side=side,
+            size=size,
+            entry_price=entry_price,
+            unrealized_pnl=unrealized,
+        )
+
     def _render_portfolio_table(self) -> None:
         self.positions_table.setRowCount(len(self.open_positions))
-        for row, position in enumerate(self.open_positions.values()):
+        for row, position in enumerate(self.open_positions):
             self.positions_table.setItem(row, 0, QtWidgets.QTableWidgetItem(position.symbol))
             self.positions_table.setItem(row, 1, QtWidgets.QTableWidgetItem(position.side))
             self.positions_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{position.size:.6f}"))
@@ -1163,7 +1192,7 @@ class TradingApp(QtWidgets.QMainWindow):
         taker_fee = self.strategy.taker_fee
         tp_pct = self.tp_input.value() / 100
         sl_pct = self.sl_input.value() / 100
-        for position in self.open_positions.values():
+        for position in self.open_positions:
             last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
             if not last_price or position.entry_price <= 0:
                 continue
