@@ -251,6 +251,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.client: Optional[BybitRestClient] = None
         self.connected = False
         self.position_mode_detected: Optional[str] = None
+        self.limit_shift_attempts: Dict[tuple, int] = {}
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01},
@@ -343,6 +344,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.limit_price_input.setValue(0.0)
         self.limit_price_input.setSuffix(" $")
         self.limit_price_input.setEnabled(False)
+        self.auto_shift_checkbox = QtWidgets.QCheckBox("Auto-shift limit")
+        self.auto_shift_checkbox.setChecked(True)
+        self.shift_bps_input = QtWidgets.QDoubleSpinBox()
+        self.shift_bps_input.setRange(0.01, 1.0)
+        self.shift_bps_input.setDecimals(2)
+        self.shift_bps_input.setValue(0.05)
+        self.shift_bps_input.setSuffix(" %")
 
         self.top_n_input = QtWidgets.QSpinBox()
         self.top_n_input.setRange(5, 5)
@@ -411,6 +419,8 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.order_type_input, 2, 1)
         controls_layout.addWidget(QtWidgets.QLabel("Limit price"), 2, 2)
         controls_layout.addWidget(self.limit_price_input, 2, 3)
+        controls_layout.addWidget(self.auto_shift_checkbox, 2, 4)
+        controls_layout.addWidget(self.shift_bps_input, 2, 5)
         controls_layout.addWidget(QtWidgets.QLabel("TP"), 3, 0)
         controls_layout.addWidget(self.tp_input, 3, 1)
         controls_layout.addWidget(QtWidgets.QLabel("SL"), 3, 2)
@@ -853,9 +863,21 @@ class TradingApp(QtWidgets.QMainWindow):
             if limit_price <= 0 and price is not None:
                 limit_price = price
             if limit_price is None or limit_price <= 0:
-                logging.warning("Limit price missing; falling back to Market order.")
-                order_type = "Market"
-                limit_price = None
+                logging.error("Limit price must be greater than 0.")
+                return
+            if self.auto_shift_checkbox.isChecked():
+                shift_key = (symbol, side)
+                attempt = self.limit_shift_attempts.get(shift_key, 0) + 1
+                direction = 1 if side == "Buy" else -1
+                shift_pct = self.shift_bps_input.value() / 100
+                limit_price = limit_price * (1 + (shift_pct * attempt * direction))
+                self.limit_shift_attempts[shift_key] = attempt
+                logging.info(
+                    "Auto-shift limit price (%s attempt %s): %.4f",
+                    symbol,
+                    attempt,
+                    limit_price,
+                )
         try:
             response = self._send_order(
                 symbol,
@@ -892,6 +914,8 @@ class TradingApp(QtWidgets.QMainWindow):
                 logging.error("Order rejected: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
                 return
             logging.info("Order sent: %s %s %.6f -> %s", side, symbol, normalized_qty, response)
+            if order_type == "Limit":
+                self.limit_shift_attempts.pop((symbol, side), None)
         except requests.RequestException as exc:
             logging.error("Order failed: %s", exc)
 

@@ -23,5 +23,6 @@ python src/main.py
 - Requires `requests` for REST calls.
 - Order sizes are normalized to per-symbol step sizes to avoid invalid quantity errors.
 - Supports Market and Limit order types (set in the Trading Controls).
+- Limit orders can auto-shift price in small steps until filled (auto-shift is enabled by default).
 - Position mode auto-detects and falls back to one-way if it cannot be resolved; override manually if needed.
 - Fee assumptions: default UI values are 0.06% taker / 0.01% maker with an extra fee buffer.
