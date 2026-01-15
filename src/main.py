@@ -777,7 +777,12 @@ class TradingApp(QtWidgets.QMainWindow):
             position.tp_price = entry * (1 + tp_pct * direction)
             position.sl_price = entry * (1 - sl_pct * direction)
             self.positions[snapshot.symbol] = position
-            self._place_order(snapshot.symbol, "Buy" if direction > 0 else "Sell", abs(position.qty))
+            self._place_order(
+                snapshot.symbol,
+                "Buy" if direction > 0 else "Sell",
+                abs(position.qty),
+                price=entry,
+            )
             logging.info(
                 "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
                 snapshot.symbol,
@@ -814,7 +819,12 @@ class TradingApp(QtWidgets.QMainWindow):
         if hit_tp or hit_sl:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
-            self._place_order(snapshot.symbol, "Sell" if direction > 0 else "Buy", abs(position.qty))
+            self._place_order(
+                snapshot.symbol,
+                "Sell" if direction > 0 else "Buy",
+                abs(position.qty),
+                price=exit_price,
+            )
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
                 snapshot.symbol,
@@ -827,7 +837,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position.tp_price = 0.0
             position.sl_price = 0.0
 
-    def _place_order(self, symbol: str, side: str, qty: float) -> None:
+    def _place_order(self, symbol: str, side: str, qty: float, price: Optional[float] = None) -> None:
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
@@ -840,7 +850,9 @@ class TradingApp(QtWidgets.QMainWindow):
         limit_price = None
         if order_type == "Limit":
             limit_price = self.limit_price_input.value()
-            if limit_price <= 0:
+            if limit_price <= 0 and price is not None:
+                limit_price = price
+            if limit_price is None or limit_price <= 0:
                 logging.error("Limit price must be greater than 0.")
                 return
         try:
