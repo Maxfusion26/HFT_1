@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import random
 import sys
 import time
@@ -1261,7 +1262,8 @@ class TradingApp(QtWidgets.QMainWindow):
         if normalized < min_qty:
             normalized = min_qty
         if price and min_notional > 0 and (normalized * price) < min_notional:
-            return None
+            required = math.ceil((min_notional / price) / step) * step
+            normalized = max(normalized, required, min_qty)
         return normalized
 
 
