@@ -13,6 +13,7 @@ logging, and a backtesting dashboard.
 - Backtesting simulator and P&L dashboard placeholder with fee buffer.
 - File + UI logging.
 - Max concurrent positions control to cap simultaneous open trades.
+- Live portfolio tab showing balance, equity, open positions, and real-time PnL.
 
 ## Run
 ```bash

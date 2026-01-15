@@ -68,6 +68,15 @@ class OrderRequest:
     remaining_qty: Optional[float] = None
 
 
+@dataclass
+class PositionSnapshot:
+    symbol: str
+    side: str
+    size: float
+    entry_price: float
+    unrealized_pnl: float
+
+
 class ConfigManager:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -198,6 +207,52 @@ class BybitRestClient:
                 specs[symbol] = {"min_qty": min_qty, "step": step, "min_notional": min_notional}
         return specs
 
+    def fetch_positions(self) -> list:
+        endpoint = "/v5/position/list"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        params = {"category": "linear"}
+        query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        signature = self._sign(timestamp, recv_window, query)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+        }
+        response = requests.get(
+            f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return []
+        return payload.get("result", {}).get("list", [])
+
+    def fetch_wallet_balance(self) -> dict:
+        endpoint = "/v5/account/wallet-balance"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        params = {"accountType": "UNIFIED"}
+        query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        signature = self._sign(timestamp, recv_window, query)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+        }
+        response = requests.get(
+            f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return {}
+        return payload.get("result", {})
+
 class QtLogHandler(logging.Handler):
     def __init__(self, widget: QtWidgets.QTextEdit) -> None:
         super().__init__()
@@ -277,6 +332,22 @@ class InstrumentThread(QtCore.QThread):
             self.finished.emit(specs, None)
         except Exception as exc:  # noqa: BLE001
             self.finished.emit({}, exc)
+
+
+class PortfolioThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(list, dict, object)
+
+    def __init__(self, client: BybitRestClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            positions = self.client.fetch_positions()
+            balance = self.client.fetch_wallet_balance()
+            self.finished.emit(positions, balance, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit([], {}, exc)
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -356,17 +427,22 @@ class TradingApp(QtWidgets.QMainWindow):
         self.order_threads: List[OrderThread] = []
         self.ticker_thread: Optional[TickerThread] = None
         self.instrument_thread: Optional[InstrumentThread] = None
+        self.instrument_specs_ready = False
+        self.portfolio_thread: Optional[PortfolioThread] = None
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
         self.ticker_last_price_map: Dict[str, float] = {}
         self.selected_symbols: List[str] = []
         self._updating_symbol_list = False
+        self.open_positions: Dict[str, PositionSnapshot] = {}
+        self.portfolio_timer = QtCore.QTimer(self)
+        self.portfolio_timer.setInterval(2000)
         self.symbol_specs = {
-            "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 0.0},
-            "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 0.0},
-            "BNBUSDT": {"min_qty": 0.1, "step": 0.1, "min_notional": 0.0},
-            "SOLUSDT": {"min_qty": 0.1, "step": 0.1, "min_notional": 0.0},
-            "XRPUSDT": {"min_qty": 1.0, "step": 1.0, "min_notional": 0.0},
+            "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 5.0},
+            "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 5.0},
+            "BNBUSDT": {"min_qty": 0.1, "step": 0.1, "min_notional": 5.0},
+            "SOLUSDT": {"min_qty": 0.1, "step": 0.1, "min_notional": 5.0},
+            "XRPUSDT": {"min_qty": 1.0, "step": 1.0, "min_notional": 5.0},
         }
         self.positions: Dict[str, PositionState] = {}
         self.symbol_metrics: List[SymbolMetrics] = []
@@ -386,14 +462,17 @@ class TradingApp(QtWidgets.QMainWindow):
         self.trading_tab = QtWidgets.QWidget()
         self.backtest_tab = QtWidgets.QWidget()
         self.dashboard_tab = QtWidgets.QWidget()
+        self.portfolio_tab = QtWidgets.QWidget()
 
         self.tabs.addTab(self.trading_tab, "Trading")
         self.tabs.addTab(self.backtest_tab, "Backtesting")
         self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.tabs.addTab(self.portfolio_tab, "Portfolio")
 
         self._setup_trading_tab()
         self._setup_backtest_tab()
         self._setup_dashboard_tab()
+        self._setup_portfolio_tab()
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
@@ -661,6 +740,38 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.addWidget(self.pnl_label)
         layout.addWidget(self.pnl_chart)
 
+    def _setup_portfolio_tab(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self.portfolio_tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        summary_group = QtWidgets.QGroupBox("Live Portfolio")
+        summary_group.setProperty("card", "true")
+        summary_layout = QtWidgets.QGridLayout(summary_group)
+        summary_layout.setHorizontalSpacing(10)
+        summary_layout.setVerticalSpacing(6)
+
+        self.balance_label = QtWidgets.QLabel("Balance: --")
+        self.equity_label = QtWidgets.QLabel("Equity: --")
+        self.unrealized_label = QtWidgets.QLabel("Unrealized PnL: --")
+        self.open_positions_label = QtWidgets.QLabel("Open positions: 0")
+
+        summary_layout.addWidget(self.balance_label, 0, 0)
+        summary_layout.addWidget(self.equity_label, 0, 1)
+        summary_layout.addWidget(self.unrealized_label, 1, 0)
+        summary_layout.addWidget(self.open_positions_label, 1, 1)
+
+        self.positions_table = QtWidgets.QTableWidget(0, 5)
+        self.positions_table.setHorizontalHeaderLabels(
+            ["Symbol", "Side", "Size", "Entry", "Unrealized PnL"]
+        )
+        self.positions_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Stretch
+        )
+
+        layout.addWidget(summary_group)
+        layout.addWidget(self.positions_table)
+
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
@@ -760,6 +871,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.auto_select_checkbox.toggled.connect(self._toggle_auto_select)
         self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
         self.trading_timer.timeout.connect(self._run_trading_cycle)
+        self.portfolio_timer.timeout.connect(self._request_portfolio)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
 
@@ -813,6 +925,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_detected = self._detect_position_mode()
         self._request_tickers()
         self._request_instruments()
+        self.portfolio_timer.start()
         logging.info("Connected to Bybit futures API at %s", base_url)
         self.connection_status_label.setText("Status: Connected")
         self.connection_status_label.setProperty("status", "ok")
@@ -825,9 +938,15 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_symbols = []
         self.ticker_change_map = {}
         self.ticker_last_price_map = {}
+        self.instrument_specs_ready = False
+        self.open_positions = {}
+        self.portfolio_timer.stop()
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
         self.instrument_thread = None
+        if self.portfolio_thread and self.portfolio_thread.isRunning():
+            self.portfolio_thread.quit()
+        self.portfolio_thread = None
         logging.info("Disconnected from Bybit futures API")
         self.connection_status_label.setText("Status: Disconnected")
         self.connection_status_label.setProperty("status", "idle")
@@ -963,12 +1082,20 @@ class TradingApp(QtWidgets.QMainWindow):
         self.instrument_thread.finished.connect(self._on_instruments_ready)
         self.instrument_thread.start()
 
+    def _request_portfolio(self) -> None:
+        if not self.client or (self.portfolio_thread and self.portfolio_thread.isRunning()):
+            return
+        self.portfolio_thread = PortfolioThread(self.client)
+        self.portfolio_thread.finished.connect(self._on_portfolio_ready)
+        self.portfolio_thread.start()
+
     def _on_instruments_ready(self, specs: dict, error: object) -> None:
         if error:
             logging.error("Failed to fetch instrument specs: %s", error)
             return
         if specs:
             self.symbol_specs.update(specs)
+            self.instrument_specs_ready = True
 
     def _on_tickers_ready(self, symbols: list, change_map: dict, last_price_map: dict, error: object) -> None:
         if error:
@@ -978,6 +1105,79 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
         self._refresh_symbol_table()
+
+    def _on_portfolio_ready(self, positions: list, balance: dict, error: object) -> None:
+        if error:
+            logging.error("Failed to fetch portfolio: %s", error)
+            return
+        self._update_portfolio(balance, positions)
+
+    def _update_portfolio(self, balance: dict, positions: list) -> None:
+        self.open_positions = {}
+        total_unrealized = 0.0
+        for item in positions:
+            size = float(item.get("size", 0) or 0)
+            if size == 0:
+                continue
+            symbol = item.get("symbol", "")
+            side = item.get("side", "")
+            entry_price = float(item.get("avgPrice", 0) or 0)
+            unrealized = float(item.get("unrealisedPnl", 0) or 0)
+            self.open_positions[symbol] = PositionSnapshot(
+                symbol=symbol,
+                side=side,
+                size=size,
+                entry_price=entry_price,
+                unrealized_pnl=unrealized,
+            )
+            total_unrealized += unrealized
+
+        self._render_portfolio_table()
+        self._render_balance_summary(balance, total_unrealized)
+        self._monitor_positions_for_exit()
+
+    def _render_portfolio_table(self) -> None:
+        self.positions_table.setRowCount(len(self.open_positions))
+        for row, position in enumerate(self.open_positions.values()):
+            self.positions_table.setItem(row, 0, QtWidgets.QTableWidgetItem(position.symbol))
+            self.positions_table.setItem(row, 1, QtWidgets.QTableWidgetItem(position.side))
+            self.positions_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{position.size:.6f}"))
+            self.positions_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{position.entry_price:.4f}"))
+            self.positions_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{position.unrealized_pnl:.2f}"))
+        self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
+
+    def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
+        total_equity = "--"
+        total_wallet = "--"
+        if balance:
+            account_list = balance.get("list", [])
+            if account_list:
+                account = account_list[0]
+                total_equity = account.get("totalEquity", "--")
+                total_wallet = account.get("totalWalletBalance", "--")
+        self.balance_label.setText(f"Balance: {total_wallet}")
+        self.equity_label.setText(f"Equity: {total_equity}")
+        self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
+
+    def _monitor_positions_for_exit(self) -> None:
+        taker_fee = self.strategy.taker_fee
+        tp_pct = self.tp_input.value() / 100
+        sl_pct = self.sl_input.value() / 100
+        for position in self.open_positions.values():
+            last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
+            if not last_price or position.entry_price <= 0:
+                continue
+            direction = 1 if position.side.lower() == "buy" else -1
+            gross_pct = (last_price - position.entry_price) / position.entry_price * direction
+            net_pct = gross_pct - (taker_fee * 2)
+            if net_pct >= tp_pct or net_pct <= -sl_pct:
+                close_side = "Sell" if direction > 0 else "Buy"
+                self._place_order(
+                    position.symbol,
+                    close_side,
+                    position.size,
+                    price=last_price,
+                )
 
     def _run_backtest(self) -> None:
         steps = self.backtest_steps_input.value()
@@ -1053,11 +1253,17 @@ class TradingApp(QtWidgets.QMainWindow):
             if self._count_open_positions() >= self.max_positions_input.value():
                 logging.info("Max positions reached; skipping new entry.")
                 return
+            if not self.instrument_specs_ready:
+                logging.warning("Instrument specs not loaded; skipping entry sizing.")
+                return
             direction = 1 if momentum > 0 else -1
             entry = snapshot.ask if direction > 0 else snapshot.bid
             desired_usdt = self.position_size_input.value()
-            reference_price = self.ticker_last_price_map.get(snapshot.symbol, entry)
-            raw_qty = desired_usdt / reference_price if reference_price else 0.0
+            reference_price = self.ticker_last_price_map.get(snapshot.symbol)
+            if not reference_price:
+                logging.warning("No live price for %s; skipping entry sizing.", snapshot.symbol)
+                return
+            raw_qty = desired_usdt / reference_price
             normalized_qty = self._normalize_qty(snapshot.symbol, raw_qty, reference_price)
             if normalized_qty is None:
                 logging.error(
@@ -1135,13 +1341,15 @@ class TradingApp(QtWidgets.QMainWindow):
             position.sl_price = 0.0
 
     def _count_open_positions(self) -> int:
+        if self.open_positions:
+            return len(self.open_positions)
         return sum(1 for pos in self.positions.values() if pos.qty != 0)
 
     def _place_order(self, symbol: str, side: str, qty: float, price: Optional[float] = None) -> None:
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
-        reference_price = price or self.ticker_last_price_map.get(symbol)
+        reference_price = self.ticker_last_price_map.get(symbol) or price
         normalized_qty = self._normalize_qty(symbol, qty, reference_price)
         if normalized_qty is None:
             specs = self.symbol_specs.get(symbol, {})
@@ -1180,6 +1388,11 @@ class TradingApp(QtWidgets.QMainWindow):
                     attempt,
                     limit_price,
                 )
+        if limit_price:
+            normalized_qty = self._normalize_qty(symbol, normalized_qty, limit_price)
+            if normalized_qty is None:
+                logging.error("Order rejected locally: %s %s (limit min notional/min qty)", side, symbol)
+                return
         request = OrderRequest(
             symbol=symbol,
             side=side,
