@@ -1140,6 +1140,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
         self._render_portfolio_table()
         self._render_balance_summary(balance, total_unrealized)
+        self._sync_local_positions()
         self._monitor_positions_for_exit()
 
     def _parse_portfolio_position(self, item: dict) -> Optional[PositionSnapshot]:
@@ -1375,6 +1376,16 @@ class TradingApp(QtWidgets.QMainWindow):
     def _check_exit(self, snapshot: MarketSnapshot, position: PositionState) -> None:
         if position.qty == 0:
             return
+        if self.open_positions and not any(
+            open_position.symbol == snapshot.symbol for open_position in self.open_positions
+        ):
+            position.qty = 0
+            position.entry_price = 0.0
+            position.tp_price = 0.0
+            position.sl_price = 0.0
+            self.positions[snapshot.symbol] = position
+            logging.warning("Local position cleared (not on exchange): %s", snapshot.symbol)
+            return
         direction = 1 if position.qty > 0 else -1
         hit_tp = snapshot.mid >= position.tp_price if direction > 0 else snapshot.mid <= position.tp_price
         hit_sl = snapshot.mid <= position.sl_price if direction > 0 else snapshot.mid >= position.sl_price
@@ -1404,6 +1415,19 @@ class TradingApp(QtWidgets.QMainWindow):
         if self.open_positions:
             return len(self.open_positions)
         return sum(1 for pos in self.positions.values() if pos.qty != 0)
+
+    def _sync_local_positions(self) -> None:
+        if not self.open_positions:
+            return
+        open_symbols = {position.symbol for position in self.open_positions}
+        for symbol, position in self.positions.items():
+            if position.qty != 0 and symbol not in open_symbols:
+                position.qty = 0
+                position.entry_price = 0.0
+                position.tp_price = 0.0
+                position.sl_price = 0.0
+                self.positions[symbol] = position
+                logging.warning("Synced local position to exchange: %s cleared", symbol)
 
     def _has_open_position(self, symbol: str) -> bool:
         if self.open_positions:
