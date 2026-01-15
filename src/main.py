@@ -192,8 +192,9 @@ class BybitRestClient:
             lot_filter = item.get("lotSizeFilter", {})
             min_qty = float(lot_filter.get("minOrderQty", 0) or 0)
             step = float(lot_filter.get("qtyStep", 0) or 0)
+            min_notional = float(lot_filter.get("minNotional", 0) or 0)
             if symbol and min_qty > 0 and step > 0:
-                specs[symbol] = {"min_qty": min_qty, "step": step}
+                specs[symbol] = {"min_qty": min_qty, "step": step, "min_notional": min_notional}
         return specs
 
 class QtLogHandler(logging.Handler):
@@ -354,11 +355,11 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
         self.symbol_specs = {
-            "BTCUSDT": {"min_qty": 0.001, "step": 0.001},
-            "ETHUSDT": {"min_qty": 0.01, "step": 0.01},
-            "BNBUSDT": {"min_qty": 0.1, "step": 0.1},
-            "SOLUSDT": {"min_qty": 0.1, "step": 0.1},
-            "XRPUSDT": {"min_qty": 1.0, "step": 1.0},
+            "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 0.0},
+            "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 0.0},
+            "BNBUSDT": {"min_qty": 0.1, "step": 0.1, "min_notional": 0.0},
+            "SOLUSDT": {"min_qty": 0.1, "step": 0.1, "min_notional": 0.0},
+            "XRPUSDT": {"min_qty": 1.0, "step": 1.0, "min_notional": 0.0},
         }
         self.positions: Dict[str, PositionState] = {}
         self.symbol_metrics: List[SymbolMetrics] = []
@@ -1081,9 +1082,20 @@ class TradingApp(QtWidgets.QMainWindow):
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
-        normalized_qty = self._normalize_qty(symbol, qty)
+        normalized_qty = self._normalize_qty(symbol, qty, price)
         if normalized_qty is None:
-            logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
+            specs = self.symbol_specs.get(symbol, {})
+            min_notional = specs.get("min_notional", 0.0)
+            if price and min_notional > 0:
+                logging.error(
+                    "Order rejected locally: %s %s %.6f (min notional %.2f USDT)",
+                    side,
+                    symbol,
+                    qty,
+                    min_notional,
+                )
+            else:
+                logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
         position_idx = self._resolve_position_idx(side)
         order_type = self.order_type_input.currentText()
@@ -1237,15 +1249,18 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.error("Position mode detection error: %s. Defaulting to one-way.", exc)
             return "one-way"
 
-    def _normalize_qty(self, symbol: str, qty: float) -> Optional[float]:
-        specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001})
+    def _normalize_qty(self, symbol: str, qty: float, price: Optional[float]) -> Optional[float]:
+        specs = self.symbol_specs.get(symbol, {"min_qty": 0.001, "step": 0.001, "min_notional": 0.0})
         step = specs["step"]
         min_qty = specs["min_qty"]
+        min_notional = specs.get("min_notional", 0.0)
         if step <= 0 or min_qty <= 0:
             return None
         normalized = (qty // step) * step
         normalized = round(normalized, 6)
         if normalized < min_qty:
+            normalized = min_qty
+        if price and min_notional > 0 and (normalized * price) < min_notional:
             return None
         return normalized
 
