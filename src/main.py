@@ -739,6 +739,37 @@ class TradingApp(QtWidgets.QMainWindow):
         self._wire_signals()
         self._refresh_symbol_table()
 
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._shutdown_threads()
+        super().closeEvent(event)
+
+    def _shutdown_threads(self) -> None:
+        self.ticker_timer.stop()
+        self.portfolio_timer.stop()
+        self.time_status_timer.stop()
+        self.history_timer.stop()
+        self.trading_timer.stop()
+        self._stop_thread(self.ticker_thread)
+        self._stop_thread(self.instrument_thread)
+        self._stop_thread(self.portfolio_thread)
+        self._stop_thread(self.history_thread)
+        for thread in list(self.order_threads):
+            self._stop_thread(thread)
+        for thread in list(self.trading_stop_threads):
+            self._stop_thread(thread)
+        self.order_threads.clear()
+        self.trading_stop_threads.clear()
+        self.ticker_thread = None
+        self.instrument_thread = None
+        self.portfolio_thread = None
+        self.history_thread = None
+
+    @staticmethod
+    def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
+        if thread and thread.isRunning():
+            thread.quit()
+            thread.wait(1500)
+
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -1395,22 +1426,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.open_positions = []
         self.portfolio_ready = False
         self.trading_stop_cache = {}
-        self.ticker_timer.stop()
-        self.portfolio_timer.stop()
-        self.time_status_timer.stop()
-        self.history_timer.stop()
-        if self.ticker_thread and self.ticker_thread.isRunning():
-            self.ticker_thread.quit()
-        self.ticker_thread = None
-        if self.history_thread and self.history_thread.isRunning():
-            self.history_thread.quit()
-        self.history_thread = None
-        if self.instrument_thread and self.instrument_thread.isRunning():
-            self.instrument_thread.quit()
-        self.instrument_thread = None
-        if self.portfolio_thread and self.portfolio_thread.isRunning():
-            self.portfolio_thread.quit()
-        self.portfolio_thread = None
+        self._shutdown_threads()
         logging.info("Disconnected from Bybit futures API")
         self.connection_status_label.setText("Status: Disconnected")
         self.connection_status_label.setProperty("status", "idle")
