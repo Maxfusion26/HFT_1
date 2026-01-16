@@ -881,6 +881,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_secret_input.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.api_base_url_input = QtWidgets.QLineEdit("https://api.bybit.com")
         self.auto_save_checkbox = QtWidgets.QCheckBox("Auto-save")
+        self.debug_logging_checkbox = QtWidgets.QCheckBox("Debug logging")
 
         creds_layout.addWidget(QtWidgets.QLabel("API Key"), 0, 0)
         creds_layout.addWidget(self.api_key_input, 0, 1)
@@ -889,6 +890,7 @@ class TradingApp(QtWidgets.QMainWindow):
         creds_layout.addWidget(QtWidgets.QLabel("Base URL"), 2, 0)
         creds_layout.addWidget(self.api_base_url_input, 2, 1)
         creds_layout.addWidget(self.auto_save_checkbox, 3, 0, 1, 2)
+        creds_layout.addWidget(self.debug_logging_checkbox, 4, 0, 1, 2)
 
         controls_group = QtWidgets.QGroupBox("Trading Controls")
         controls_group.setProperty("card", "true")
@@ -1285,6 +1287,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_secret_input.setText(data.get("api_secret", ""))
         self.api_base_url_input.setText(data.get("base_url", "https://api.bybit.com"))
         self.auto_save_checkbox.setChecked(data.get("auto_save", False))
+        self.debug_logging_checkbox.setChecked(data.get("debug_logging", False))
         if geometry := data.get("window_geometry"):
             self.restoreGeometry(QtCore.QByteArray.fromHex(geometry.encode("utf-8")))
         if splitter_sizes := data.get("splitter_sizes"):
@@ -1315,8 +1318,9 @@ class TradingApp(QtWidgets.QMainWindow):
     def _setup_logging(self) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         ROOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log_level = logging.DEBUG if self.debug_logging_checkbox.isChecked() else logging.INFO
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=log_level,
             format="%(asctime)s | %(levelname)s | %(message)s",
             handlers=[
                 logging.FileHandler(LOG_FILE, encoding="utf-8"),
@@ -1324,6 +1328,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 QtLogHandler(self.log_output),
             ],
         )
+        self._set_logging_level(log_level)
         QtCore.qInstallMessageHandler(_log_qt_message)
         try:
             self._fault_log_handle = ROOT_LOG_FILE.open("a", encoding="utf-8")
@@ -1337,6 +1342,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.disconnect_button.clicked.connect(self._disconnect)
         self.auto_trading_toggle.toggled.connect(self._toggle_auto_trading)
         self.auto_save_checkbox.toggled.connect(self._persist_config)
+        self.debug_logging_checkbox.toggled.connect(self._toggle_debug_logging)
         self.api_key_input.textChanged.connect(self._persist_config)
         self.api_secret_input.textChanged.connect(self._persist_config)
         self.api_base_url_input.textChanged.connect(self._persist_config)
@@ -1383,6 +1389,7 @@ class TradingApp(QtWidgets.QMainWindow):
             "api_secret": self.api_secret_input.text().strip(),
             "base_url": self.api_base_url_input.text().strip(),
             "auto_save": self.auto_save_checkbox.isChecked(),
+            "debug_logging": self.debug_logging_checkbox.isChecked(),
             "position_size": self.position_size_input.value(),
             "max_positions": self.max_positions_input.value(),
             "tp_pct": self.tp_input.value(),
@@ -1411,6 +1418,19 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _toggle_order_type(self, order_type: str) -> None:
         self.limit_price_input.setEnabled(order_type == "Limit")
+
+    def _toggle_debug_logging(self, enabled: bool) -> None:
+        level = logging.DEBUG if enabled else logging.INFO
+        self._set_logging_level(level)
+        self._persist_config()
+        logging.info("Debug logging %s", "enabled" if enabled else "disabled")
+
+    @staticmethod
+    def _set_logging_level(level: int) -> None:
+        logger = logging.getLogger()
+        logger.setLevel(level)
+        for handler in logger.handlers:
+            handler.setLevel(level)
 
     def _connect(self) -> None:
         api_key = self.api_key_input.text().strip()
