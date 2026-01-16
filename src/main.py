@@ -29,10 +29,7 @@ class SymbolMetrics:
     volatility: float
     imbalance: float
     change_24h: float
-
-    @property
-    def score(self) -> float:
-        return (self.volume_usd * 0.6) + (self.volatility * 0.3) + (self.imbalance * 0.1)
+    score: float
 
 
 @dataclass
@@ -421,7 +418,7 @@ class OrderThread(QtCore.QThread):
 
 
 class TickerThread(QtCore.QThread):
-    finished = QtCore.pyqtSignal(list, dict, dict, object)
+    finished = QtCore.pyqtSignal(list, dict, dict, dict, object)
 
     def __init__(self, client: BybitRestClient) -> None:
         super().__init__()
@@ -433,19 +430,40 @@ class TickerThread(QtCore.QThread):
             change_map = {}
             symbols = []
             last_price_map = {}
+            details_map = {}
             for ticker in tickers:
                 symbol = ticker.get("symbol")
                 last_price = float(ticker.get("lastPrice", 0) or 0)
                 prev_price = float(ticker.get("prevPrice24h", 0) or 0)
+                high_price = float(ticker.get("highPrice24h", 0) or 0)
+                low_price = float(ticker.get("lowPrice24h", 0) or 0)
+                bid_price = float(ticker.get("bid1Price", 0) or 0)
+                ask_price = float(ticker.get("ask1Price", 0) or 0)
+                bid_size = float(ticker.get("bid1Size", 0) or 0)
+                ask_size = float(ticker.get("ask1Size", 0) or 0)
+                turnover = float(ticker.get("turnover24h", 0) or 0)
+                volume = float(ticker.get("volume24h", 0) or 0)
                 if symbol:
                     symbols.append(symbol)
                     if last_price > 0:
                         last_price_map[symbol] = last_price
                     if prev_price > 0:
                         change_map[symbol] = ((last_price - prev_price) / prev_price) * 100
-            self.finished.emit(symbols, change_map, last_price_map, None)
+                    details_map[symbol] = {
+                        "last_price": last_price,
+                        "prev_price": prev_price,
+                        "high_price": high_price,
+                        "low_price": low_price,
+                        "bid_price": bid_price,
+                        "ask_price": ask_price,
+                        "bid_size": bid_size,
+                        "ask_size": ask_size,
+                        "turnover": turnover,
+                        "volume": volume,
+                    }
+            self.finished.emit(symbols, change_map, last_price_map, details_map, None)
         except Exception as exc:  # noqa: BLE001
-            self.finished.emit([], {}, {}, exc)
+            self.finished.emit([], {}, {}, {}, exc)
 
 
 class InstrumentThread(QtCore.QThread):
@@ -513,6 +531,22 @@ class TradingStopThread(QtCore.QThread):
             self.finished.emit(self.request, response, None)
         except Exception as exc:  # noqa: BLE001
             self.finished.emit(self.request, None, exc)
+
+
+@dataclass
+class EntrySignal:
+    symbol: str
+    direction: int
+    score: float
+    confidence: float
+    momentum: float
+    imbalance: float
+    micro_edge: float
+    volatility_pct: float
+    spread_pct: float
+    reason: str
+
+
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -599,6 +633,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
         self.ticker_last_price_map: Dict[str, float] = {}
+        self.ticker_detail_map: Dict[str, dict] = {}
         self.selected_symbols: List[str] = []
         self._updating_symbol_list = False
         self.open_positions: List[PositionSnapshot] = []
@@ -1252,6 +1287,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_symbols = []
         self.ticker_change_map = {}
         self.ticker_last_price_map = {}
+        self.ticker_detail_map = {}
         self.instrument_specs_ready = False
         self.open_positions = []
         self.portfolio_ready = False
@@ -1293,7 +1329,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _log_strategy_overview(self) -> None:
         logging.info(
-            "Strategy: hybrid market making + momentum with inventory skew and fee-aware thresholds."
+            "Strategy: liquidity-weighted symbol scan + multi-factor entry (trend, imbalance, micro-price)."
         )
 
     def _log_once(self, key: str, message: str, level: int = logging.INFO) -> None:
@@ -1423,18 +1459,72 @@ class TradingApp(QtWidgets.QMainWindow):
     def _generate_symbol_metrics(self) -> List[SymbolMetrics]:
         symbols, change_map = self._fetch_symbol_universe()
         metrics = []
+        has_live_metrics = bool(self.ticker_detail_map)
         for symbol in symbols:
             change_24h = change_map.get(symbol, random.uniform(-6.0, 12.0))
+            if has_live_metrics:
+                details = self.ticker_detail_map.get(symbol, {})
+                last_price = details.get("last_price") or self.ticker_last_price_map.get(symbol, 0)
+                turnover = details.get("turnover", 0.0)
+                volume = details.get("volume", 0.0)
+                volume_usd = turnover if turnover > 0 else volume * (last_price or 0)
+                high_price = details.get("high_price", 0.0)
+                low_price = details.get("low_price", 0.0)
+                if last_price and high_price and low_price:
+                    volatility = ((high_price - low_price) / last_price) * 100
+                else:
+                    volatility = random.uniform(0.5, 3.0)
+                bid_size = details.get("bid_size", 0.0)
+                ask_size = details.get("ask_size", 0.0)
+                if bid_size or ask_size:
+                    imbalance = (bid_size - ask_size) / max(bid_size + ask_size, 1e-9)
+                else:
+                    imbalance = random.uniform(-1.0, 1.0)
+            else:
+                volume_usd = random.uniform(10_000_000, 200_000_000)
+                volatility = random.uniform(0.5, 3.0)
+                imbalance = random.uniform(-1.0, 1.0)
             metrics.append(
                 SymbolMetrics(
                     symbol=symbol,
-                    volume_usd=random.uniform(10_000_000, 200_000_000),
-                    volatility=random.uniform(0.5, 3.0),
-                    imbalance=random.uniform(-1.0, 1.0),
+                    volume_usd=volume_usd,
+                    volatility=volatility,
+                    imbalance=imbalance,
                     change_24h=change_24h,
+                    score=0.0,
                 )
             )
+        self._score_symbol_metrics(metrics)
         return metrics
+
+    def _score_symbol_metrics(self, metrics: List[SymbolMetrics]) -> None:
+        if not metrics:
+            return
+        volume_values = [metric.volume_usd for metric in metrics]
+        volatility_values = [metric.volatility for metric in metrics]
+        imbalance_values = [abs(metric.imbalance) for metric in metrics]
+        change_values = [abs(metric.change_24h) for metric in metrics]
+        volume_min, volume_max = min(volume_values), max(volume_values)
+        vol_min, vol_max = min(volatility_values), max(volatility_values)
+        imb_min, imb_max = min(imbalance_values), max(imbalance_values)
+        chg_min, chg_max = min(change_values), max(change_values)
+        for metric in metrics:
+            volume_norm = self._normalize_metric(metric.volume_usd, volume_min, volume_max)
+            volatility_norm = self._normalize_metric(metric.volatility, vol_min, vol_max)
+            imbalance_norm = self._normalize_metric(abs(metric.imbalance), imb_min, imb_max)
+            change_norm = self._normalize_metric(abs(metric.change_24h), chg_min, chg_max)
+            metric.score = (
+                (volume_norm * 0.4)
+                + (volatility_norm * 0.25)
+                + (imbalance_norm * 0.2)
+                + (change_norm * 0.15)
+            )
+
+    @staticmethod
+    def _normalize_metric(value: float, min_value: float, max_value: float) -> float:
+        if max_value <= min_value:
+            return 0.0
+        return (value - min_value) / (max_value - min_value)
 
     def _fetch_symbol_universe(self) -> tuple[List[str], dict]:
         if not self.client:
@@ -1502,13 +1592,21 @@ class TradingApp(QtWidgets.QMainWindow):
             self.symbol_specs.update(specs)
             self.instrument_specs_ready = True
 
-    def _on_tickers_ready(self, symbols: list, change_map: dict, last_price_map: dict, error: object) -> None:
+    def _on_tickers_ready(
+        self,
+        symbols: list,
+        change_map: dict,
+        last_price_map: dict,
+        details_map: dict,
+        error: object,
+    ) -> None:
         if error:
             logging.error("Failed to fetch symbol universe: %s", error)
             return
         self.ticker_symbols = symbols
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
+        self.ticker_detail_map = details_map
         self._refresh_symbol_table()
         if self.open_positions:
             self._render_portfolio_table()
@@ -2016,15 +2114,33 @@ class TradingApp(QtWidgets.QMainWindow):
         return [symbol for symbol in self.selected_symbols if symbol in {m.symbol for m in self.symbol_metrics}]
 
     def _simulate_market_snapshot(self, symbol: str) -> MarketSnapshot:
-        base = 30000 if symbol == "BTCUSDT" else 2000 if symbol == "ETHUSDT" else 100
-        mid = base + random.uniform(-1, 1) * base * 0.001
-        spread = random.uniform(0.02, 0.08) * base * 0.001
-        bid = mid - spread / 2
-        ask = mid + spread / 2
-        bid_size = random.uniform(10, 80)
-        ask_size = random.uniform(10, 80)
+        details = self.ticker_detail_map.get(symbol, {})
+        last_price = details.get("last_price") or self.ticker_last_price_map.get(symbol)
+        if last_price:
+            bid = details.get("bid_price") or (last_price * 0.9995)
+            ask = details.get("ask_price") or (last_price * 1.0005)
+            if ask <= bid:
+                ask = bid + (last_price * 0.0002)
+            mid = (bid + ask) / 2
+            bid_size = details.get("bid_size") or random.uniform(5, 60)
+            ask_size = details.get("ask_size") or random.uniform(5, 60)
+            high_price = details.get("high_price") or last_price
+            low_price = details.get("low_price") or last_price
+            volatility = (
+                ((high_price - low_price) / last_price) * 100
+                if last_price
+                else random.uniform(0.3, 2.5)
+            )
+        else:
+            base = 30000 if symbol == "BTCUSDT" else 2000 if symbol == "ETHUSDT" else 100
+            mid = base + random.uniform(-1, 1) * base * 0.001
+            spread = random.uniform(0.02, 0.08) * base * 0.001
+            bid = mid - spread / 2
+            ask = mid + spread / 2
+            bid_size = random.uniform(10, 80)
+            ask_size = random.uniform(10, 80)
+            volatility = random.uniform(0.3, 2.5)
         imbalance = (bid_size - ask_size) / max(bid_size + ask_size, 1e-9)
-        volatility = random.uniform(0.3, 2.5)
         return MarketSnapshot(
             symbol=symbol,
             mid=mid,
@@ -2039,8 +2155,7 @@ class TradingApp(QtWidgets.QMainWindow):
     def _apply_strategy(self, snapshot: MarketSnapshot, fee_buffer: float) -> None:
         position = self.positions.get(snapshot.symbol, PositionState(symbol=snapshot.symbol))
         use_maker = self.maker_mode_checkbox.isChecked()
-        required_edge = self.strategy.required_edge(use_maker, fee_buffer)
-        momentum = snapshot.volatility * snapshot.imbalance
+        entry_signal = self._compute_entry_signal(snapshot, fee_buffer, use_maker)
 
         if self._has_open_position(snapshot.symbol):
             return
@@ -2050,7 +2165,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self.positions[snapshot.symbol] = position
             return
 
-        if abs(momentum) > required_edge:
+        if entry_signal:
             if self.connected and not self.portfolio_ready:
                 self._log_once(
                     "portfolio_not_synced",
@@ -2070,7 +2185,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     level=logging.WARNING,
                 )
                 return
-            direction = 1 if momentum > 0 else -1
+            direction = entry_signal.direction
             entry = snapshot.ask if direction > 0 else snapshot.bid
             desired_usdt = self.position_size_input.value()
             reference_price = self.ticker_last_price_map.get(snapshot.symbol)
@@ -2118,13 +2233,15 @@ class TradingApp(QtWidgets.QMainWindow):
                 abs(position.qty),
                 entry,
                 notional_usdt=abs(position.qty) * entry,
-                reason="Momentum",
+                reason=entry_signal.reason,
             )
             logging.info(
-                "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
+                "%s entry %s @ %.2f (score %.4f, conf %.4f, TP %.2f / SL %.2f)",
                 snapshot.symbol,
                 "LONG" if direction > 0 else "SHORT",
                 entry,
+                entry_signal.score,
+                entry_signal.confidence,
                 position.tp_price,
                 position.sl_price,
             )
@@ -2146,6 +2263,55 @@ class TradingApp(QtWidgets.QMainWindow):
                 quote_ask,
                 snapshot.imbalance,
             )
+
+    def _compute_entry_signal(
+        self,
+        snapshot: MarketSnapshot,
+        fee_buffer: float,
+        use_maker: bool,
+    ) -> Optional[EntrySignal]:
+        if snapshot.mid <= 0:
+            return None
+        change_24h = self.ticker_change_map.get(snapshot.symbol, 0.0) / 100
+        spread = snapshot.ask - snapshot.bid
+        spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
+        if spread_pct > 0.004:
+            return None
+        imbalance = snapshot.imbalance
+        micro_price = snapshot.mid + (imbalance * spread * 0.5)
+        micro_edge = (micro_price - snapshot.mid) / snapshot.mid
+        momentum = change_24h * 0.6
+        order_flow = imbalance * 0.25
+        micro_bias = micro_edge * 0.15
+        score = momentum + order_flow + micro_bias
+        direction = 1 if score >= 0 else -1
+        confirmations = sum(
+            1
+            for signal in (momentum, order_flow, micro_bias)
+            if signal * direction > 0.00005
+        )
+        if confirmations < 2:
+            return None
+        volatility_pct = snapshot.volatility
+        volatility_boost = 1 + min(volatility_pct / 100, 0.08) * 6
+        confidence = abs(score) * volatility_boost
+        required_edge = self.strategy.required_edge(use_maker, fee_buffer)
+        threshold = required_edge + (spread_pct * 0.35)
+        if confidence <= threshold:
+            return None
+        reason = "Trend+Flow" if abs(momentum) >= abs(order_flow) else "OrderFlow+Micro"
+        return EntrySignal(
+            symbol=snapshot.symbol,
+            direction=direction,
+            score=score,
+            confidence=confidence,
+            momentum=momentum,
+            imbalance=imbalance,
+            micro_edge=micro_edge,
+            volatility_pct=volatility_pct,
+            spread_pct=spread_pct,
+            reason=reason,
+        )
 
     def _check_exit(self, snapshot: MarketSnapshot, position: PositionState) -> None:
         if position.qty == 0:
