@@ -575,6 +575,8 @@ class EntrySignal:
     volatility_pct: float
     spread_pct: float
     reason: str
+    predicted_move_pct: float
+    predicted_confidence: float
 
 
 class PnlChartWidget(QtWidgets.QLabel):
@@ -711,6 +713,12 @@ class TradingApp(QtWidgets.QMainWindow):
         self._rendering_history_table = False
         self._shutting_down = False
         self._thread_shutdown_timeout_ms = 12_000
+        self._signal_history: Dict[str, List[EntrySignal]] = {}
+        self._signal_history_depth = 6
+        self._min_signal_confirmations = 3
+        self._signal_cooldown_seconds = 3.0
+        self._signal_min_age_seconds = 2.0
+        self._signal_state: Dict[str, dict] = {}
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
@@ -2458,7 +2466,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self.positions[snapshot.symbol] = position
             return
 
-        if entry_signal:
+        if entry_signal and self._should_enter_position(entry_signal):
             if self.connected and not self.portfolio_ready:
                 self._log_once(
                     "portfolio_not_synced",
@@ -2529,14 +2537,13 @@ class TradingApp(QtWidgets.QMainWindow):
                 reason=entry_signal.reason,
             )
             logging.info(
-                "%s entry %s @ %.2f (score %.4f, conf %.4f, TP %.2f / SL %.2f)",
+                "%s entry %s @ %.2f (score %.4f, conf %.4f, pred %.2f%%)",
                 snapshot.symbol,
                 "LONG" if direction > 0 else "SHORT",
                 entry,
                 entry_signal.score,
                 entry_signal.confidence,
-                position.tp_price,
-                position.sl_price,
+                entry_signal.predicted_move_pct * 100,
             )
             return
 
@@ -2565,12 +2572,6 @@ class TradingApp(QtWidgets.QMainWindow):
     ) -> Optional[EntrySignal]:
         if snapshot.mid <= 0:
             return None
-        tp_pct = self.tp_input.value() / 100
-        sl_pct = self.sl_input.value() / 100
-        if tp_pct <= 0 or sl_pct <= 0:
-            return None
-        if tp_pct < sl_pct * 2:
-            return None
         change_24h = self.ticker_change_map.get(snapshot.symbol, 0.0) / 100
         details = self.ticker_detail_map.get(snapshot.symbol, {})
         last_price = details.get("last_price") or snapshot.mid
@@ -2580,7 +2581,7 @@ class TradingApp(QtWidgets.QMainWindow):
         volume = float(details.get("volume", 0.0) or 0.0)
         spread = snapshot.ask - snapshot.bid
         spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
-        if spread_pct > min(sl_pct * 0.5, 0.0015):
+        if spread_pct > 0.0015:
             return None
         range_span = max(high_price - low_price, 0.0)
         range_mid = (high_price + low_price) / 2 if range_span > 0 else last_price
@@ -2596,7 +2597,7 @@ class TradingApp(QtWidgets.QMainWindow):
         momentum = change_24h * 0.45
         range_bias = range_pos * 0.2
         volatility_pct = snapshot.volatility
-        if range_pct <= 0.003 or volatility_pct < max(0.9, tp_pct * 100):
+        if range_pct <= 0.003 or volatility_pct < 0.9:
             return None
         liquidity_hint = turnover if turnover > 0 else volume * last_price
         if liquidity_hint > 0 and liquidity_hint < 2_500_000:
@@ -2626,11 +2627,22 @@ class TradingApp(QtWidgets.QMainWindow):
         confidence = abs(score) * volatility_boost * liquidity_boost
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
         threshold = required_edge + (spread_pct * 0.6)
-        target_pct = max(self.tp_input.value(), 1.0) / 100
-        expected_move = (volatility_pct / 100) * 0.7 + abs(change_24h) * 0.2 + range_pct * 0.1
-        if expected_move < target_pct * 1.1:
+        orderbook_pressure = imbalance * 0.15
+        trend_component = abs(change_24h) * 0.25
+        micro_component = abs(micro_edge) * 0.3
+        range_component = range_pct * 0.2
+        volatility_component = (volatility_pct / 100) * 0.35
+        expected_move = (
+            volatility_component
+            + trend_component
+            + range_component
+            + micro_component
+            + abs(orderbook_pressure)
+        )
+        predicted_confidence = confidence * (1 + abs(orderbook_pressure))
+        if expected_move < 0.006:
             return None
-        if confidence <= threshold * 1.5:
+        if predicted_confidence <= threshold * 1.2:
             return None
         reason = "Trend+Flow" if regime_trend else "MeanRevert+Flow"
         return EntrySignal(
@@ -2644,7 +2656,55 @@ class TradingApp(QtWidgets.QMainWindow):
             volatility_pct=volatility_pct,
             spread_pct=spread_pct,
             reason=reason,
+            predicted_move_pct=expected_move,
+            predicted_confidence=predicted_confidence,
         )
+
+    def _should_enter_position(self, signal: EntrySignal) -> bool:
+        now = time.time()
+        history = self._signal_history.setdefault(signal.symbol, [])
+        previous = history[-1] if history else None
+        history.append(signal)
+        if len(history) > self._signal_history_depth:
+            self._signal_history[signal.symbol] = history[-self._signal_history_depth :]
+            history = self._signal_history[signal.symbol]
+
+        state = self._signal_state.setdefault(
+            signal.symbol,
+            {
+                "last_entry_ts": 0.0,
+                "last_signal_ts": 0.0,
+                "streak": 0,
+                "streak_start_ts": now,
+            },
+        )
+        if now - state["last_entry_ts"] < self._signal_cooldown_seconds:
+            return False
+
+        if previous and signal.direction == previous.direction:
+            state["streak"] += 1
+        else:
+            state["streak"] = 1
+            state["streak_start_ts"] = now
+        state["last_signal_ts"] = now
+
+        if state["streak"] < self._min_signal_confirmations:
+            return False
+        if now - state["streak_start_ts"] < self._signal_min_age_seconds:
+            return False
+
+        recent = history[-self._min_signal_confirmations :]
+        if len(recent) < self._min_signal_confirmations:
+            return False
+        if any(item.direction != signal.direction for item in recent):
+            return False
+        if any(item.predicted_move_pct < 0.006 for item in recent):
+            return False
+        if any(item.predicted_confidence < signal.predicted_confidence * 0.8 for item in recent):
+            return False
+
+        state["last_entry_ts"] = now
+        return True
 
     @staticmethod
     def _clamp(value: float, min_value: float, max_value: float) -> float:
