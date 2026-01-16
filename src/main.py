@@ -1192,15 +1192,16 @@ class TradingApp(QtWidgets.QMainWindow):
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 2px; background: #0f1422; padding: 5px; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 12px; margin-top: 6px; background: #0f1422; padding: 8px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; font-weight: 600; }
             QGroupBox[card="true"] { background: #0f172a; }
-            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 1px; }
+            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 3px; }
             QFrame[divider="true"] { color: #1f2937; background: #1f2937; min-height: 1px; max-height: 1px; }
-            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 5px 10px; }
+            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 12px; font-weight: 600; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
+            QPushButton:pressed { background: #1d4ed8; }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 4px; border-radius: 8px; min-height: 24px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; min-height: 26px; }
             QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { width: 20px; }
             QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow { width: 10px; height: 10px; }
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
@@ -1210,8 +1211,12 @@ class TradingApp(QtWidgets.QMainWindow):
             QHeaderView::section { background: #111827; color: #94a3b8; padding: 5px; border: none; font-weight: 600; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
-            QTabBar::tab { background: #111827; color: #94a3b8; padding: 5px 10px; border-radius: 10px; margin-right: 6px; min-width: 90px; }
+            QTabBar::tab { background: #111827; color: #94a3b8; padding: 7px 14px; border-radius: 12px; margin-right: 8px; min-width: 100px; }
             QTabBar::tab:selected { background: #1f2937; color: #e6edf3; }
+            QScrollBar:vertical { background: #0b1220; width: 10px; margin: 2px; }
+            QScrollBar::handle:vertical { background: #1f2937; border-radius: 5px; min-height: 24px; }
+            QScrollBar::handle:vertical:hover { background: #334155; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
             """
         )
 
@@ -2901,6 +2906,8 @@ class TradingApp(QtWidgets.QMainWindow):
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
+    QtWidgets.QApplication.setStyle("Fusion")
+    app.setFont(QtGui.QFont("Segoe UI", 10))
     app.setOrganizationName("HFT Lab")
     app.setApplicationName("Bybit HFT Suite")
     window = TradingApp()
