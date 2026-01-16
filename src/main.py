@@ -2164,6 +2164,21 @@ class TradingApp(QtWidgets.QMainWindow):
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
             return
+        if not reduce_only and self._count_open_positions() > self.max_positions_input.value():
+            self._log_once(
+                "max_positions_exceeded",
+                "Max positions exceeded; blocking new entry order.",
+                level=logging.WARNING,
+            )
+            position = self.positions.get(symbol)
+            if position and position.qty != 0:
+                position.qty = 0
+                position.entry_price = 0.0
+                position.tp_price = 0.0
+                position.sl_price = 0.0
+                position.position_idx = None
+                self.positions[symbol] = position
+            return
         reference_price = self.ticker_last_price_map.get(symbol) or price
         normalized_qty = self._normalize_qty(symbol, qty, reference_price)
         if normalized_qty is None:
