@@ -6,7 +6,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from pathlib import Path
@@ -166,6 +166,26 @@ class BybitRestClient:
         if payload.get("retCode") != 0:
             return []
         return payload.get("result", {}).get("list", [])
+
+    def fetch_server_time(self) -> Optional[float]:
+        endpoint = "/v5/market/time"
+        response = requests.get(f"{self.base_url}{endpoint}", timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return None
+        result = payload.get("result", {})
+        if "timeSecond" in result:
+            try:
+                return float(result["timeSecond"]) * 1000
+            except (TypeError, ValueError):
+                return None
+        if "timeNano" in result:
+            try:
+                return float(result["timeNano"]) / 1_000_000
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def fetch_position_mode(self) -> Optional[str]:
         endpoint = "/v5/position/list"
@@ -456,6 +476,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_ready = False
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(2000)
+        self.time_status_timer = QtCore.QTimer(self)
+        self.time_status_timer.setInterval(2000)
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 5.0},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 5.0},
@@ -495,13 +517,12 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("Bybit Futures HFT Suite")
-        title.setProperty("role", "title")
-        subtitle = QtWidgets.QLabel("Adaptive market maker • Momentum overlay")
-        subtitle.setProperty("role", "subtitle")
+        self.time_status_label = QtWidgets.QLabel("Moscow: -- | Bybit: -- | Ping: -- ms")
+        time_font = QtGui.QFont()
+        time_font.setBold(True)
+        self.time_status_label.setFont(time_font)
         title_wrap = QtWidgets.QVBoxLayout()
-        title_wrap.addWidget(title)
-        title_wrap.addWidget(subtitle)
+        title_wrap.addWidget(self.time_status_label)
 
         self.connection_status_label = QtWidgets.QLabel("Disconnected")
         self.connection_status_label.setProperty("status", "idle")
@@ -946,6 +967,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
         self.trading_timer.timeout.connect(self._run_trading_cycle)
         self.portfolio_timer.timeout.connect(self._request_portfolio)
+        self.time_status_timer.timeout.connect(self._update_time_status)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
 
@@ -1003,6 +1025,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self._request_tickers()
         self._request_instruments()
         self.portfolio_timer.start()
+        self.time_status_timer.start()
+        self._update_time_status()
         logging.info("Connected to Bybit futures API at %s", base_url)
         self.connection_status_label.setText("Status: Connected")
         self.connection_status_label.setProperty("status", "ok")
@@ -1019,6 +1043,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.open_positions = []
         self.portfolio_ready = False
         self.portfolio_timer.stop()
+        self.time_status_timer.stop()
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
         self.instrument_thread = None
@@ -1166,6 +1191,27 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_thread = PortfolioThread(self.client)
         self.portfolio_thread.finished.connect(self._on_portfolio_ready)
         self.portfolio_thread.start()
+
+    def _update_time_status(self) -> None:
+        moscow_time = datetime.now(timezone.utc).astimezone(
+            timezone(timedelta(hours=3))
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        bybit_time_text = "--"
+        ping_text = "--"
+        if self.client:
+            try:
+                start = time.time()
+                server_time_ms = self.client.fetch_server_time()
+                ping_ms = (time.time() - start) * 1000
+                ping_text = f"{ping_ms:.0f}"
+                if server_time_ms is not None:
+                    server_dt = datetime.fromtimestamp(server_time_ms / 1000, tz=timezone.utc)
+                    bybit_time_text = server_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except requests.RequestException as exc:
+                logging.warning("Failed to fetch Bybit server time: %s", exc)
+        self.time_status_label.setText(
+            f"Moscow: {moscow_time} | Bybit: {bybit_time_text} | Ping: {ping_text} ms"
+        )
 
     def _on_instruments_ready(self, specs: dict, error: object) -> None:
         if error:
