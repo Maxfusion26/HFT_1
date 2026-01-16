@@ -2390,6 +2390,8 @@ class TradingApp(QtWidgets.QMainWindow):
         last_price = details.get("last_price") or snapshot.mid
         high_price = details.get("high_price") or last_price
         low_price = details.get("low_price") or last_price
+        turnover = float(details.get("turnover", 0.0) or 0.0)
+        volume = float(details.get("volume", 0.0) or 0.0)
         spread = snapshot.ask - snapshot.bid
         spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
         if spread_pct > 0.0035:
@@ -2399,6 +2401,7 @@ class TradingApp(QtWidgets.QMainWindow):
         range_pos = (
             (last_price - range_mid) / (range_span / 2) if range_span > 0 else 0.0
         )
+        range_pct = range_span / last_price if last_price else 0.0
         imbalance = snapshot.imbalance
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
@@ -2407,6 +2410,11 @@ class TradingApp(QtWidgets.QMainWindow):
         momentum = change_24h * 0.45
         range_bias = range_pos * 0.2
         volatility_pct = snapshot.volatility
+        if range_pct <= 0.002 or volatility_pct < 0.6:
+            return None
+        liquidity_hint = turnover if turnover > 0 else volume * last_price
+        if liquidity_hint > 0 and liquidity_hint < 1_000_000:
+            return None
         regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
         if regime_trend:
             score = momentum + order_flow + micro_bias + range_bias
@@ -2418,7 +2426,12 @@ class TradingApp(QtWidgets.QMainWindow):
             for signal in (momentum, order_flow, micro_bias, range_bias)
             if signal * direction > 0.00004
         )
-        if confirmations < 3:
+        flow_strength = abs(imbalance) * (1 - min(spread_pct * 50, 0.5))
+        trend_strength = abs(change_24h)
+        range_strength = abs(range_pos)
+        if flow_strength < 0.08 and trend_strength < 0.004:
+            return None
+        if confirmations < 3 or range_strength < 0.1:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
@@ -2426,7 +2439,7 @@ class TradingApp(QtWidgets.QMainWindow):
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
         threshold = required_edge + (spread_pct * 0.4)
         target_pct = max(self.tp_input.value(), 1.0) / 100
-        expected_move = (volatility_pct / 100) * 0.7 + abs(change_24h) * 0.3
+        expected_move = (volatility_pct / 100) * 0.7 + abs(change_24h) * 0.2 + range_pct * 0.1
         if expected_move < target_pct * 0.8:
             return None
         if confidence <= threshold:
