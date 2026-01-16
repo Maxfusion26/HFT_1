@@ -19,7 +19,19 @@ import requests
 CONFIG_DIR = Path.home() / ".hft_bybit"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "trading.log"
+ROOT_LOG_FILE = Path(__file__).resolve().parents[1] / "log.log"
 PNL_HISTORY_FILE = Path(__file__).resolve().parents[1] / "pnl_history.json"
+
+
+def _log_uncaught_exception(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    exc_traceback: Optional[object],
+) -> None:
+    logging.critical(
+        "Uncaught exception",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
 
 
 @dataclass
@@ -1225,11 +1237,13 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _setup_logging(self) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ROOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s | %(levelname)s | %(message)s",
             handlers=[
                 logging.FileHandler(LOG_FILE, encoding="utf-8"),
+                logging.FileHandler(ROOT_LOG_FILE, encoding="utf-8"),
                 QtLogHandler(self.log_output),
             ],
         )
@@ -2953,6 +2967,7 @@ def main() -> None:
     app.setFont(QtGui.QFont("Segoe UI", 10))
     app.setOrganizationName("HFT Lab")
     app.setApplicationName("Bybit HFT Suite")
+    sys.excepthook = _log_uncaught_exception
     window = TradingApp()
     window.show()
     sys.exit(app.exec())
