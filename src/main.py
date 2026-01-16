@@ -1418,6 +1418,12 @@ class TradingApp(QtWidgets.QMainWindow):
         logging.log(level, message)
         self._last_log_events[key] = message
 
+    @staticmethod
+    def _ensure_utc_datetime(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
     def _load_pnl_history(self) -> None:
         if not PNL_HISTORY_FILE.exists():
             return
@@ -2028,19 +2034,19 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         if not hasattr(self, "pnl_start_input") or not hasattr(self, "pnl_end_input"):
             return
-        start_dt = self.pnl_start_input.dateTime().toPyDateTime()
-        end_dt = self.pnl_end_input.dateTime().toPyDateTime()
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=timezone.utc)
-        if end_dt.tzinfo is None:
-            end_dt = end_dt.replace(tzinfo=timezone.utc)
+        start_dt = self._ensure_utc_datetime(self.pnl_start_input.dateTime().toPyDateTime())
+        end_dt = self._ensure_utc_datetime(self.pnl_end_input.dateTime().toPyDateTime())
         if end_dt < start_dt:
             start_dt, end_dt = end_dt, start_dt
-        entries = [
-            entry
-            for entry in self.pnl_history
-            if entry.pnl_usdt is not None and start_dt <= entry.timestamp <= end_dt
-        ]
+        entries = []
+        for entry in self.pnl_history:
+            if entry.pnl_usdt is None:
+                continue
+            entry_ts = self._ensure_utc_datetime(entry.timestamp)
+            if start_dt <= entry_ts <= end_dt:
+                if entry_ts is not entry.timestamp:
+                    entry.timestamp = entry_ts
+                entries.append(entry)
         if not entries:
             self.pnl_chart.set_data([], [], "PnL: нет данных за выбранный период")
             self.pnl_summary_label.setText("Summary: --")
