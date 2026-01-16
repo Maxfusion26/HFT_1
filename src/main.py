@@ -578,7 +578,11 @@ class PnlChartWidget(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(QtGui.QColor("#1f2937")))
             painter.drawRect(rect)
             painter.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
-            painter.drawText(rect.adjusted(8, 6, -8, -6), self._title)
+            painter.drawText(
+                rect.adjusted(8, 6, -8, -6),
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop,
+                self._title,
+            )
 
             if not self._pnl_values:
                 return
