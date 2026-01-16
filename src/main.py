@@ -555,9 +555,9 @@ class PnlChartWidget(QtWidgets.QWidget):
         self._title = "PnL: нет данных"
 
     def set_data(self, pnl_values: List[float], dd_values: List[float], title: str) -> None:
-        self._pnl_values = pnl_values
+        self._pnl_values = [value for value in pnl_values if math.isfinite(value)]
         if dd_values and len(dd_values) == len(pnl_values):
-            self._dd_values = dd_values
+            self._dd_values = [value for value in dd_values if math.isfinite(value)]
         else:
             self._dd_values = [0.0 for _ in pnl_values]
         self._title = title
@@ -577,6 +577,8 @@ class PnlChartWidget(QtWidgets.QWidget):
             return
 
         chart_rect = rect.adjusted(16, 28, -16, -24)
+        if chart_rect.width() <= 0 or chart_rect.height() <= 0:
+            return
         dd_values = self._dd_values or [0.0 for _ in self._pnl_values]
         min_y = min(min(dd_values), 0.0)
         max_y = max(self._pnl_values)
@@ -1978,8 +1980,10 @@ class TradingApp(QtWidgets.QMainWindow):
         total_pnl = 0.0
         pnl_values = []
         dd_values = []
-        for idx, entry in enumerate(entries):
+        for entry in entries:
             pnl_value = float(entry.pnl_usdt or 0)
+            if not math.isfinite(pnl_value):
+                continue
             running_total += pnl_value
             total_pnl += pnl_value
             if pnl_value >= 0:
@@ -1990,15 +1994,19 @@ class TradingApp(QtWidgets.QMainWindow):
             drawdown = running_total - peak
             pnl_values.append(running_total)
             dd_values.append(drawdown)
+        if not pnl_values:
+            self.pnl_chart.set_data([], [], "PnL: нет данных за выбранный период")
+            self.pnl_summary_label.setText("Summary: --")
+            return
         self.pnl_chart.set_data(
             pnl_values,
             dd_values,
             "PnL: cumulative / drawdown",
         )
         win_rate = (wins / max(wins + losses, 1)) * 100
-        avg_pnl = total_pnl / max(len(entries), 1)
+        avg_pnl = total_pnl / max(len(pnl_values), 1)
         self.pnl_summary_label.setText(
-            f"Summary: Trades {len(entries)} | Win rate {win_rate:.1f}% | Avg PnL {avg_pnl:,.2f} USDT"
+            f"Summary: Trades {len(pnl_values)} | Win rate {win_rate:.1f}% | Avg PnL {avg_pnl:,.2f} USDT"
         )
 
     def _sync_trading_stops(self) -> None:
