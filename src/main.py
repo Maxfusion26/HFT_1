@@ -12,7 +12,7 @@ import hmac
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCharts, QtCore, QtGui, QtWidgets
 import requests
 
 
@@ -1016,8 +1016,15 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _setup_dashboard_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.dashboard_tab)
+        header_row = QtWidgets.QHBoxLayout()
+        self.dashboard_time_label = QtWidgets.QLabel("Moscow: --")
+        self.dashboard_time_label.setProperty("role", "subtitle")
+        header_row.addWidget(self.dashboard_time_label)
+        header_row.addStretch()
         self.pnl_label = QtWidgets.QLabel("P&L: 0.0 USDT")
         self.pnl_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.pnl_summary_label = QtWidgets.QLabel("Summary: --")
+        self.pnl_summary_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         filter_row = QtWidgets.QHBoxLayout()
         filter_row.addWidget(QtWidgets.QLabel("Start"))
         self.pnl_start_input = QtWidgets.QDateTimeEdit()
@@ -1035,12 +1042,16 @@ class TradingApp(QtWidgets.QMainWindow):
         self.pnl_start_input.setDateTime(QtCore.QDateTime(now - timedelta(days=7)))
         self.pnl_end_input.setDateTime(QtCore.QDateTime(now))
 
-        self.pnl_chart = QtWidgets.QTextEdit()
-        self.pnl_chart.setReadOnly(True)
-        self.pnl_chart.setPlaceholderText("P&L chart placeholder")
+        self.pnl_chart = QtCharts.QChart()
+        self.pnl_chart.legend().setVisible(True)
+        self.pnl_chart.legend().setAlignment(QtCore.Qt.AlignmentFlag.AlignBottom)
+        self.pnl_chart_view = QtCharts.QChartView(self.pnl_chart)
+        self.pnl_chart_view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         layout.addWidget(self.pnl_label)
+        layout.addWidget(self.pnl_summary_label)
+        layout.addLayout(header_row)
         layout.addLayout(filter_row)
-        layout.addWidget(self.pnl_chart)
+        layout.addWidget(self.pnl_chart_view)
 
     def _build_portfolio_section(self) -> QtWidgets.QWidget:
         section = QtWidgets.QWidget()
@@ -1584,6 +1595,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.time_status_label.setText(
             f"Moscow: {moscow_time} | Bybit: {bybit_time_text} | Ping: {ping_text} ms"
         )
+        if hasattr(self, "dashboard_time_label"):
+            self.dashboard_time_label.setText(f"Moscow: {moscow_time}")
 
     def _on_instruments_ready(self, specs: dict, error: object) -> None:
         if error:
@@ -1882,7 +1895,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
 
     def _refresh_pnl_chart(self) -> None:
-        if not hasattr(self, "pnl_chart"):
+        if not hasattr(self, "pnl_chart") or not hasattr(self, "pnl_chart_view"):
             return
         if not hasattr(self, "pnl_start_input") or not hasattr(self, "pnl_end_input"):
             return
@@ -1895,18 +1908,61 @@ class TradingApp(QtWidgets.QMainWindow):
             for entry in self.pnl_history
             if entry.pnl_usdt is not None and start_dt <= entry.timestamp <= end_dt
         ]
+        self.pnl_chart.removeAllSeries()
         if not entries:
-            self.pnl_chart.setText("No P&L data for selected period.")
+            self.pnl_chart.setTitle("PnL: нет данных за выбранный период")
+            self.pnl_chart_view.repaint()
+            self.pnl_summary_label.setText("Summary: --")
             return
         entries.sort(key=lambda item: item.timestamp)
+        pnl_series = QtCharts.QLineSeries()
+        pnl_series.setName("Cumulative PnL")
+        dd_series = QtCharts.QLineSeries()
+        dd_series.setName("Drawdown")
         running_total = 0.0
-        lines = []
-        for entry in entries:
-            running_total += float(entry.pnl_usdt or 0)
-            lines.append(
-                f"{entry.timestamp:%Y-%m-%d %H:%M:%S} | {running_total:,.2f} USDT"
-            )
-        self.pnl_chart.setText("\n".join(lines))
+        peak = 0.0
+        wins = 0
+        losses = 0
+        total_pnl = 0.0
+        pnl_values = []
+        dd_values = []
+        for idx, entry in enumerate(entries):
+            pnl_value = float(entry.pnl_usdt or 0)
+            running_total += pnl_value
+            total_pnl += pnl_value
+            if pnl_value >= 0:
+                wins += 1
+            else:
+                losses += 1
+            peak = max(peak, running_total)
+            drawdown = running_total - peak
+            pnl_values.append(running_total)
+            dd_values.append(drawdown)
+            pnl_series.append(idx, running_total)
+            dd_series.append(idx, drawdown)
+        self.pnl_chart.addSeries(pnl_series)
+        self.pnl_chart.addSeries(dd_series)
+        axis_x = QtCharts.QValueAxis()
+        axis_x.setTitleText("Trades")
+        axis_x.setLabelFormat("%d")
+        axis_x.setRange(0, max(len(entries) - 1, 1))
+        axis_y = QtCharts.QValueAxis()
+        axis_y.setTitleText("USDT")
+        min_y = min(0.0, min(dd_values))
+        max_y = max(pnl_values)
+        padding = max((max_y - min_y) * 0.1, 1.0)
+        axis_y.setRange(min_y - padding, max_y + padding)
+        self.pnl_chart.addAxis(axis_x, QtCore.Qt.AlignmentFlag.AlignBottom)
+        self.pnl_chart.addAxis(axis_y, QtCore.Qt.AlignmentFlag.AlignLeft)
+        pnl_series.attachAxis(axis_x)
+        pnl_series.attachAxis(axis_y)
+        dd_series.attachAxis(axis_x)
+        dd_series.attachAxis(axis_y)
+        win_rate = (wins / max(wins + losses, 1)) * 100
+        avg_pnl = total_pnl / max(len(entries), 1)
+        self.pnl_summary_label.setText(
+            f"Summary: Trades {len(entries)} | Win rate {win_rate:.1f}% | Avg PnL {avg_pnl:,.2f} USDT"
+        )
 
     def _sync_trading_stops(self) -> None:
         if not self.client or not self.connected:
