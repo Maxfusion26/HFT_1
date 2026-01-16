@@ -674,6 +674,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.pnl_history: List[PositionHistoryEntry] = []
         self.position_history: List[PositionHistoryEntry] = []
         self.history_keys: set[str] = set()
+        self._rendering_symbol_table = False
+        self._rendering_positions_table = False
+        self._rendering_history_table = False
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
@@ -1355,6 +1358,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_timer.stop()
         self.time_status_timer.stop()
         self.history_timer.stop()
+        if self.ticker_thread and self.ticker_thread.isRunning():
+            self.ticker_thread.quit()
+        self.ticker_thread = None
         if self.history_thread and self.history_thread.isRunning():
             self.history_thread.quit()
         self.history_thread = None
@@ -1448,23 +1454,37 @@ class TradingApp(QtWidgets.QMainWindow):
         PNL_HISTORY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _refresh_symbol_table(self) -> None:
+        if self._rendering_symbol_table:
+            return
+        self._rendering_symbol_table = True
         if self.client and not self.ticker_symbols:
             self._request_tickers()
         self.symbol_metrics = self._generate_symbol_metrics()
         self.symbol_metrics.sort(key=lambda item: item.change_24h, reverse=True)
         self._last_symbol_refresh = time.time()
 
-        self.symbol_table.setUpdatesEnabled(False)
-        self.symbol_table.setSortingEnabled(False)
-        self.symbol_table.setRowCount(len(self.symbol_metrics))
-        for row, metric in enumerate(self.symbol_metrics):
-            self.symbol_table.setItem(row, 0, QtWidgets.QTableWidgetItem(metric.symbol))
-            self.symbol_table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{metric.volume_usd:,.0f}"))
-            self.symbol_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{metric.volatility:.3f}"))
-            self.symbol_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{metric.imbalance:.3f}"))
-            self.symbol_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{metric.change_24h:.2f}%"))
-            self.symbol_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{metric.score:,.2f}"))
-        self.symbol_table.setUpdatesEnabled(True)
+        try:
+            self.symbol_table.setUpdatesEnabled(False)
+            self.symbol_table.setSortingEnabled(False)
+            self.symbol_table.setRowCount(len(self.symbol_metrics))
+            for row, metric in enumerate(self.symbol_metrics):
+                self.symbol_table.setItem(row, 0, QtWidgets.QTableWidgetItem(metric.symbol))
+                self.symbol_table.setItem(
+                    row, 1, QtWidgets.QTableWidgetItem(f"{metric.volume_usd:,.0f}")
+                )
+                self.symbol_table.setItem(
+                    row, 2, QtWidgets.QTableWidgetItem(f"{metric.volatility:.3f}")
+                )
+                self.symbol_table.setItem(
+                    row, 3, QtWidgets.QTableWidgetItem(f"{metric.imbalance:.3f}")
+                )
+                self.symbol_table.setItem(
+                    row, 4, QtWidgets.QTableWidgetItem(f"{metric.change_24h:.2f}%")
+                )
+                self.symbol_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{metric.score:,.2f}"))
+        finally:
+            self.symbol_table.setUpdatesEnabled(True)
+            self._rendering_symbol_table = False
         self._update_symbol_list()
         self._schedule_symbol_refresh()
 
@@ -1765,61 +1785,77 @@ class TradingApp(QtWidgets.QMainWindow):
         )
 
     def _render_portfolio_table(self) -> None:
-        self.positions_table.setUpdatesEnabled(False)
-        self.positions_table.setSortingEnabled(False)
-        self.positions_table.setColumnCount(10)
-        self.positions_table.setHorizontalHeaderLabels(
-            [
-                "Symbol",
-                "Side",
-                "Size",
-                "Entry",
-                "Unrealized PnL",
-                "Current Price",
-                "TP Price",
-                "SL Price",
-                "TP Profit (USDT)",
-                "SL Loss (USDT)",
-            ]
-        )
-        self.positions_table.setRowCount(len(self.open_positions))
-        for row, position in enumerate(self.open_positions):
-            self.positions_table.setItem(row, 0, QtWidgets.QTableWidgetItem(position.symbol))
-            self.positions_table.setItem(row, 1, QtWidgets.QTableWidgetItem(position.side))
-            self.positions_table.setItem(row, 2, QtWidgets.QTableWidgetItem(f"{position.size:.6f}"))
-            self.positions_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{position.entry_price:.4f}"))
-            self.positions_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{position.unrealized_pnl:.2f}"))
-            last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
-            self.positions_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{last_price:.4f}"))
-            tp_price, sl_price = self._get_tp_sl_prices(
-                position.entry_price,
-                last_price,
-                position.side,
+        if not hasattr(self, "positions_table"):
+            return
+        if self._rendering_positions_table:
+            return
+        self._rendering_positions_table = True
+        try:
+            self.positions_table.setUpdatesEnabled(False)
+            self.positions_table.setSortingEnabled(False)
+            self.positions_table.setColumnCount(10)
+            self.positions_table.setHorizontalHeaderLabels(
+                [
+                    "Symbol",
+                    "Side",
+                    "Size",
+                    "Entry",
+                    "Unrealized PnL",
+                    "Current Price",
+                    "TP Price",
+                    "SL Price",
+                    "TP Profit (USDT)",
+                    "SL Loss (USDT)",
+                ]
             )
-            self.positions_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
-            self.positions_table.setItem(row, 7, QtWidgets.QTableWidgetItem(f"{sl_price:.4f}"))
-            tp_profit = abs(tp_price - position.entry_price) * position.size
-            sl_loss = abs(position.entry_price - sl_price) * position.size
-            self.positions_table.setItem(row, 8, QtWidgets.QTableWidgetItem(f"{tp_profit:.2f}"))
-            self.positions_table.setItem(row, 9, QtWidgets.QTableWidgetItem(f"{sl_loss:.2f}"))
-            side_color = (
-                QtGui.QColor(34, 197, 94, 70)
-                if position.side.lower() == "buy"
-                else QtGui.QColor(239, 68, 68, 70)
-            )
-            for column in range(self.positions_table.columnCount()):
-                item = self.positions_table.item(row, column)
-                if item is not None:
-                    item.setBackground(side_color)
-            pnl_item = self.positions_table.item(row, 4)
-            if pnl_item is not None and position.unrealized_pnl != 0:
-                pnl_color = (
-                    QtGui.QColor(34, 197, 94)
-                    if position.unrealized_pnl > 0
-                    else QtGui.QColor(239, 68, 68)
+            self.positions_table.setRowCount(len(self.open_positions))
+            for row, position in enumerate(self.open_positions):
+                self.positions_table.setItem(row, 0, QtWidgets.QTableWidgetItem(position.symbol))
+                self.positions_table.setItem(row, 1, QtWidgets.QTableWidgetItem(position.side))
+                self.positions_table.setItem(
+                    row, 2, QtWidgets.QTableWidgetItem(f"{position.size:.6f}")
                 )
-                pnl_item.setForeground(pnl_color)
-        self.positions_table.setUpdatesEnabled(True)
+                self.positions_table.setItem(
+                    row, 3, QtWidgets.QTableWidgetItem(f"{position.entry_price:.4f}")
+                )
+                self.positions_table.setItem(
+                    row, 4, QtWidgets.QTableWidgetItem(f"{position.unrealized_pnl:.2f}")
+                )
+                last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
+                self.positions_table.setItem(
+                    row, 5, QtWidgets.QTableWidgetItem(f"{last_price:.4f}")
+                )
+                tp_price, sl_price = self._get_tp_sl_prices(
+                    position.entry_price,
+                    last_price,
+                    position.side,
+                )
+                self.positions_table.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{tp_price:.4f}"))
+                self.positions_table.setItem(row, 7, QtWidgets.QTableWidgetItem(f"{sl_price:.4f}"))
+                tp_profit = abs(tp_price - position.entry_price) * position.size
+                sl_loss = abs(position.entry_price - sl_price) * position.size
+                self.positions_table.setItem(row, 8, QtWidgets.QTableWidgetItem(f"{tp_profit:.2f}"))
+                self.positions_table.setItem(row, 9, QtWidgets.QTableWidgetItem(f"{sl_loss:.2f}"))
+                side_color = (
+                    QtGui.QColor(34, 197, 94, 70)
+                    if position.side.lower() == "buy"
+                    else QtGui.QColor(239, 68, 68, 70)
+                )
+                for column in range(self.positions_table.columnCount()):
+                    item = self.positions_table.item(row, column)
+                    if item is not None:
+                        item.setBackground(side_color)
+                pnl_item = self.positions_table.item(row, 4)
+                if pnl_item is not None and position.unrealized_pnl != 0:
+                    pnl_color = (
+                        QtGui.QColor(34, 197, 94)
+                        if position.unrealized_pnl > 0
+                        else QtGui.QColor(239, 68, 68)
+                    )
+                    pnl_item.setForeground(pnl_color)
+        finally:
+            self.positions_table.setUpdatesEnabled(True)
+            self._rendering_positions_table = False
         self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
 
     def _add_history_entry(
@@ -1862,37 +1898,43 @@ class TradingApp(QtWidgets.QMainWindow):
     def _render_history_table(self) -> None:
         if not hasattr(self, "history_table"):
             return
-        self.history_table.setUpdatesEnabled(False)
-        self.history_table.setSortingEnabled(False)
-        self.history_table.setRowCount(len(self.position_history))
-        for row, entry in enumerate(self.position_history):
-            self.history_table.setItem(
-                row,
-                0,
-                QtWidgets.QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")),
-            )
-            self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.symbol))
-            self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(entry.side))
-            self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(entry.action))
-            self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{entry.qty:.6f}"))
-            self.history_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{entry.price:.4f}"))
-            self.history_table.setItem(
-                row, 6, QtWidgets.QTableWidgetItem(f"{entry.notional_usdt:.2f}")
-            )
-            pnl_text = "--" if entry.pnl_usdt is None else f"{entry.pnl_usdt:.2f}"
-            self.history_table.setItem(row, 7, QtWidgets.QTableWidgetItem(pnl_text))
-            self.history_table.setItem(row, 8, QtWidgets.QTableWidgetItem(entry.reason))
-            if entry.pnl_usdt is not None:
-                pnl_color = (
-                    QtGui.QColor(34, 197, 94, 70)
-                    if entry.pnl_usdt > 0
-                    else QtGui.QColor(239, 68, 68, 70)
+        if self._rendering_history_table:
+            return
+        self._rendering_history_table = True
+        try:
+            self.history_table.setUpdatesEnabled(False)
+            self.history_table.setSortingEnabled(False)
+            self.history_table.setRowCount(len(self.position_history))
+            for row, entry in enumerate(self.position_history):
+                self.history_table.setItem(
+                    row,
+                    0,
+                    QtWidgets.QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")),
                 )
-                for column in range(self.history_table.columnCount()):
-                    item = self.history_table.item(row, column)
-                    if item is not None:
-                        item.setBackground(pnl_color)
-        self.history_table.setUpdatesEnabled(True)
+                self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.symbol))
+                self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(entry.side))
+                self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(entry.action))
+                self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{entry.qty:.6f}"))
+                self.history_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{entry.price:.4f}"))
+                self.history_table.setItem(
+                    row, 6, QtWidgets.QTableWidgetItem(f"{entry.notional_usdt:.2f}")
+                )
+                pnl_text = "--" if entry.pnl_usdt is None else f"{entry.pnl_usdt:.2f}"
+                self.history_table.setItem(row, 7, QtWidgets.QTableWidgetItem(pnl_text))
+                self.history_table.setItem(row, 8, QtWidgets.QTableWidgetItem(entry.reason))
+                if entry.pnl_usdt is not None:
+                    pnl_color = (
+                        QtGui.QColor(34, 197, 94, 70)
+                        if entry.pnl_usdt > 0
+                        else QtGui.QColor(239, 68, 68, 70)
+                    )
+                    for column in range(self.history_table.columnCount()):
+                        item = self.history_table.item(row, column)
+                        if item is not None:
+                            item.setBackground(pnl_color)
+        finally:
+            self.history_table.setUpdatesEnabled(True)
+            self._rendering_history_table = False
 
     def _update_history_from_api(self, history: list) -> None:
         if not history:
