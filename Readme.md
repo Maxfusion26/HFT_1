@@ -1,6 +1,6 @@
 # HFT Bybit Futures Suite (Prototype)
 
-A PyQt6 prototype for an adaptive HFT market-making system on Bybit futures. The UI includes
+A PyQt5 prototype for an adaptive HFT market-making system on Bybit futures. The UI includes
 API key storage, trading toggles, position sizing, TP/SL controls, multi-symbol selection,
 logging, and a backtesting dashboard.
 

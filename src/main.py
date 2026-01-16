@@ -13,7 +13,8 @@ import hmac
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
+import sip
 import requests
 
 
@@ -766,9 +767,18 @@ class TradingApp(QtWidgets.QMainWindow):
 
     @staticmethod
     def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
-        if thread and thread.isRunning():
+        if not thread or sip.isdeleted(thread):
+            return
+        thread.requestInterruption()
+        if thread.isRunning():
             thread.quit()
-            thread.wait(1500)
+            if not thread.wait(12_000):
+                thread.terminate()
+                thread.wait(2_000)
+
+    @staticmethod
+    def _is_thread_running(thread: Optional[QtCore.QThread]) -> bool:
+        return bool(thread) and not sip.isdeleted(thread) and thread.isRunning()
 
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
@@ -966,6 +976,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self.fee_buffer_input.setValue(0.1)
         self.fee_buffer_input.setSuffix(" % buffer")
 
+        self.debug_logging_checkbox = QtWidgets.QCheckBox("Debug logging")
+        self.debug_logging_checkbox.setChecked(True)
+
         controls_layout.addWidget(self.connect_button, 0, 0)
         controls_layout.addWidget(self.disconnect_button, 0, 1)
         controls_layout.addWidget(self.auto_trading_toggle, 0, 2)
@@ -1006,6 +1019,7 @@ class TradingApp(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.auto_select_checkbox, 6, 2)
         controls_layout.addWidget(QtWidgets.QLabel("Refresh"), 6, 3)
         controls_layout.addWidget(self.auto_select_interval, 6, 4)
+        controls_layout.addWidget(self.debug_logging_checkbox, 6, 5, 1, 2)
 
         universe_group = QtWidgets.QGroupBox("Universe & Selection")
         universe_group.setProperty("card", "true")
@@ -1284,6 +1298,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_input.setCurrentText(data.get("position_mode", "Auto-detect"))
         self.auto_select_checkbox.setChecked(data.get("auto_select", True))
         self.selected_symbols = data.get("selected_symbols", [])
+        self.debug_logging_checkbox.setChecked(data.get("debug_logging", True))
 
     def _setup_logging(self) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1297,6 +1312,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 QtLogHandler(self.log_output),
             ],
         )
+        self._apply_logging_level(self.debug_logging_checkbox.isChecked())
         QtCore.qInstallMessageHandler(_log_qt_message)
         try:
             self._fault_log_handle = ROOT_LOG_FILE.open("a", encoding="utf-8")
@@ -1304,6 +1320,14 @@ class TradingApp(QtWidgets.QMainWindow):
         except OSError:
             logging.exception("Failed to enable faulthandler")
         logging.info("Application started")
+
+    @staticmethod
+    def _apply_logging_level(debug_enabled: bool) -> None:
+        level = logging.DEBUG if debug_enabled else logging.INFO
+        logger = logging.getLogger()
+        logger.setLevel(level)
+        for handler in logger.handlers:
+            handler.setLevel(level)
 
     def _wire_signals(self) -> None:
         self.connect_button.clicked.connect(self._connect)
@@ -1336,6 +1360,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.auto_shift_checkbox.toggled.connect(self._persist_config)
         self.shift_bps_input.valueChanged.connect(self._persist_config)
         self.position_mode_input.currentTextChanged.connect(self._persist_config)
+        self.debug_logging_checkbox.toggled.connect(self._persist_config)
+        self.debug_logging_checkbox.toggled.connect(self._toggle_debug_logging)
         self.auto_select_button.clicked.connect(self._refresh_symbol_table)
         self.auto_select_checkbox.toggled.connect(self._toggle_auto_select)
         self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
@@ -1379,8 +1405,13 @@ class TradingApp(QtWidgets.QMainWindow):
             "splitter_sizes": self.main_splitter.sizes(),
             "auto_select": self.auto_select_checkbox.isChecked(),
             "selected_symbols": self.selected_symbols,
+            "debug_logging": self.debug_logging_checkbox.isChecked(),
         }
         self.config.save(data)
+
+    def _toggle_debug_logging(self, enabled: bool) -> None:
+        self._apply_logging_level(enabled)
+        logging.info("Debug logging %s", "enabled" if enabled else "disabled")
 
     def _toggle_order_type(self, order_type: str) -> None:
         self.limit_price_input.setEnabled(order_type == "Limit")
@@ -2965,11 +2996,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self._cleanup_trading_stop_threads()
 
     def _cleanup_order_threads(self) -> None:
-        self.order_threads = [thread for thread in self.order_threads if thread.isRunning()]
+        self.order_threads = [
+            thread for thread in self.order_threads if self._is_thread_running(thread)
+        ]
 
     def _cleanup_trading_stop_threads(self) -> None:
         self.trading_stop_threads = [
-            thread for thread in self.trading_stop_threads if thread.isRunning()
+            thread for thread in self.trading_stop_threads if self._is_thread_running(thread)
         ]
 
     def _is_position_mode_error(self, response: dict) -> bool:
