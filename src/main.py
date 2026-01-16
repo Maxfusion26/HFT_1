@@ -1239,7 +1239,7 @@ class TradingApp(QtWidgets.QMainWindow):
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         ROOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,
             format="%(asctime)s | %(levelname)s | %(message)s",
             handlers=[
                 logging.FileHandler(LOG_FILE, encoding="utf-8"),
@@ -1342,6 +1342,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.client = BybitRestClient(api_key, api_secret, base_url)
         self.connected = True
         self.portfolio_ready = False
+        logging.debug("Connecting with base URL: %s", base_url)
         self.position_mode_detected = self._detect_position_mode()
         self._request_tickers()
         self._request_instruments()
@@ -1357,6 +1358,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.connection_status_label.style().polish(self.connection_status_label)
 
     def _disconnect(self) -> None:
+        logging.debug("Disconnect requested")
         self.client = None
         self.connected = False
         self.position_mode_detected = None
@@ -1961,6 +1963,7 @@ class TradingApp(QtWidgets.QMainWindow):
     def _update_history_from_api(self, history: list) -> None:
         if not history:
             return
+        logging.debug("History update received: %s entries", len(history))
         new_entries = []
         for item in history:
             symbol = item.get("symbol")
@@ -2015,6 +2018,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self.position_history = self.position_history[:500]
             self._render_history_table()
             self._refresh_pnl_chart()
+        logging.debug("History update applied: new=%s total=%s", len(new_entries), len(self.position_history))
 
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
         total_equity = "--"
@@ -2034,19 +2038,31 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         if not hasattr(self, "pnl_start_input") or not hasattr(self, "pnl_end_input"):
             return
-        start_dt = self._ensure_utc_datetime(self.pnl_start_input.dateTime().toPyDateTime())
-        end_dt = self._ensure_utc_datetime(self.pnl_end_input.dateTime().toPyDateTime())
-        if end_dt < start_dt:
-            start_dt, end_dt = end_dt, start_dt
-        entries = []
-        for entry in self.pnl_history:
-            if entry.pnl_usdt is None:
-                continue
-            entry_ts = self._ensure_utc_datetime(entry.timestamp)
-            if start_dt <= entry_ts <= end_dt:
-                if entry_ts is not entry.timestamp:
-                    entry.timestamp = entry_ts
-                entries.append(entry)
+        try:
+            start_dt = self._ensure_utc_datetime(self.pnl_start_input.dateTime().toPyDateTime())
+            end_dt = self._ensure_utc_datetime(self.pnl_end_input.dateTime().toPyDateTime())
+            if end_dt < start_dt:
+                start_dt, end_dt = end_dt, start_dt
+            entries = []
+            for entry in self.pnl_history:
+                if entry.pnl_usdt is None:
+                    continue
+                entry_ts = self._ensure_utc_datetime(entry.timestamp)
+                if start_dt <= entry_ts <= end_dt:
+                    if entry_ts is not entry.timestamp:
+                        entry.timestamp = entry_ts
+                    entries.append(entry)
+            logging.debug(
+                "PnL chart refresh: entries=%s range=%s..%s",
+                len(entries),
+                start_dt.isoformat(),
+                end_dt.isoformat(),
+            )
+        except Exception:  # noqa: BLE001
+            logging.exception("PnL chart refresh failed")
+            self.pnl_chart.set_data([], [], "PnL: ошибка обновления")
+            self.pnl_summary_label.setText("Summary: --")
+            return
         if not entries:
             self.pnl_chart.set_data([], [], "PnL: нет данных за выбранный период")
             self.pnl_summary_label.setText("Summary: --")
