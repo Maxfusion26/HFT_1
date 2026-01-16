@@ -1003,6 +1003,7 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.symbol_table.verticalHeader().setVisible(False)
         self.symbol_table.setAlternatingRowColors(True)
+        self.symbol_table.setUniformRowHeights(True)
         self.symbol_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1086,6 +1087,7 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setAlternatingRowColors(True)
+        self.history_table.setUniformRowHeights(True)
         self.history_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1168,6 +1170,7 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.positions_table.verticalHeader().setVisible(False)
         self.positions_table.setAlternatingRowColors(True)
+        self.positions_table.setUniformRowHeights(True)
         self.positions_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1487,6 +1490,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.symbol_metrics.sort(key=lambda item: item.change_24h, reverse=True)
         self._last_symbol_refresh = time.time()
 
+        self.symbol_table.setUpdatesEnabled(False)
+        self.symbol_table.setSortingEnabled(False)
         self.symbol_table.setRowCount(len(self.symbol_metrics))
         for row, metric in enumerate(self.symbol_metrics):
             self.symbol_table.setItem(row, 0, QtWidgets.QTableWidgetItem(metric.symbol))
@@ -1495,6 +1500,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self.symbol_table.setItem(row, 3, QtWidgets.QTableWidgetItem(f"{metric.imbalance:.3f}"))
             self.symbol_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{metric.change_24h:.2f}%"))
             self.symbol_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{metric.score:,.2f}"))
+        self.symbol_table.setUpdatesEnabled(True)
         self._update_symbol_list()
         self._schedule_symbol_refresh()
 
@@ -1787,6 +1793,8 @@ class TradingApp(QtWidgets.QMainWindow):
         )
 
     def _render_portfolio_table(self) -> None:
+        self.positions_table.setUpdatesEnabled(False)
+        self.positions_table.setSortingEnabled(False)
         self.positions_table.setColumnCount(10)
         self.positions_table.setHorizontalHeaderLabels(
             [
@@ -1839,6 +1847,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     else QtGui.QColor(239, 68, 68)
                 )
                 pnl_item.setForeground(pnl_color)
+        self.positions_table.setUpdatesEnabled(True)
         self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
 
     def _add_history_entry(
@@ -1881,6 +1890,8 @@ class TradingApp(QtWidgets.QMainWindow):
     def _render_history_table(self) -> None:
         if not hasattr(self, "history_table"):
             return
+        self.history_table.setUpdatesEnabled(False)
+        self.history_table.setSortingEnabled(False)
         self.history_table.setRowCount(len(self.position_history))
         for row, entry in enumerate(self.position_history):
             self.history_table.setItem(
@@ -1909,6 +1920,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     item = self.history_table.item(row, column)
                     if item is not None:
                         item.setBackground(pnl_color)
+        self.history_table.setUpdatesEnabled(True)
 
     def _update_history_from_api(self, history: list) -> None:
         if not history:
