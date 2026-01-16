@@ -80,6 +80,17 @@ class PositionSnapshot:
     position_idx: Optional[int] = None
 
 
+@dataclass
+class PositionHistoryEntry:
+    timestamp: datetime
+    symbol: str
+    side: str
+    action: str
+    qty: float
+    price: float
+    reason: str = ""
+
+
 class ConfigManager:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -474,6 +485,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self._updating_symbol_list = False
         self.open_positions: List[PositionSnapshot] = []
         self.portfolio_ready = False
+        self.position_history: List[PositionHistoryEntry] = []
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(2000)
         self.time_status_timer = QtCore.QTimer(self)
@@ -503,13 +515,16 @@ class TradingApp(QtWidgets.QMainWindow):
         self.trading_tab = QtWidgets.QWidget()
         self.backtest_tab = QtWidgets.QWidget()
         self.dashboard_tab = QtWidgets.QWidget()
+        self.history_tab = QtWidgets.QWidget()
         self.tabs.addTab(self.trading_tab, "Trading")
         self.tabs.addTab(self.backtest_tab, "Backtesting")
         self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.tabs.addTab(self.history_tab, "History")
 
         self._setup_trading_tab()
         self._setup_backtest_tab()
         self._setup_dashboard_tab()
+        self._setup_history_tab()
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
@@ -808,6 +823,29 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.addWidget(self.backtest_button)
         layout.addWidget(QtWidgets.QLabel("Backtest Summary"))
         layout.addWidget(self.backtest_output)
+
+    def _setup_history_tab(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self.history_tab)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        header = QtWidgets.QLabel("Position History")
+        header.setProperty("role", "title")
+        layout.addWidget(header)
+
+        self.history_table = QtWidgets.QTableWidget(0, 7)
+        self.history_table.setHorizontalHeaderLabels(
+            ["Time", "Symbol", "Side", "Action", "Qty", "Price", "Reason"]
+        )
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.history_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.history_table)
 
     def _setup_dashboard_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.dashboard_tab)
@@ -1373,6 +1411,42 @@ class TradingApp(QtWidgets.QMainWindow):
                 pnl_item.setForeground(pnl_color)
         self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
 
+    def _add_history_entry(
+        self,
+        symbol: str,
+        side: str,
+        action: str,
+        qty: float,
+        price: float,
+        reason: str = "",
+    ) -> None:
+        entry = PositionHistoryEntry(
+            timestamp=datetime.utcnow(),
+            symbol=symbol,
+            side=side,
+            action=action,
+            qty=qty,
+            price=price,
+            reason=reason,
+        )
+        self.position_history.insert(0, entry)
+        if len(self.position_history) > 500:
+            self.position_history = self.position_history[:500]
+        self._render_history_table()
+
+    def _render_history_table(self) -> None:
+        if not hasattr(self, "history_table"):
+            return
+        self.history_table.setRowCount(len(self.position_history))
+        for row, entry in enumerate(self.position_history):
+            self.history_table.setItem(row, 0, QtWidgets.QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")))
+            self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.symbol))
+            self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(entry.side))
+            self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(entry.action))
+            self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{entry.qty:.6f}"))
+            self.history_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{entry.price:.4f}"))
+            self.history_table.setItem(row, 6, QtWidgets.QTableWidgetItem(entry.reason))
+
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
         total_equity = "--"
         total_wallet = "--"
@@ -1499,6 +1573,14 @@ class TradingApp(QtWidgets.QMainWindow):
                     reduce_only=True,
                     position_idx_override=position_idx,
                 )
+                self._add_history_entry(
+                    position.symbol,
+                    close_side,
+                    "Exit",
+                    position.size,
+                    last_price,
+                    reason=exit_reason,
+                )
                 logging.info(
                     "%s exit %s @ %.2f (TP %.2f / SL %.2f)",
                     position.symbol,
@@ -1624,6 +1706,14 @@ class TradingApp(QtWidgets.QMainWindow):
                 price=entry,
                 position_idx_override=position_idx,
             )
+            self._add_history_entry(
+                snapshot.symbol,
+                "Buy" if direction > 0 else "Sell",
+                "Entry",
+                abs(position.qty),
+                entry,
+                reason="Momentum",
+            )
             logging.info(
                 "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
                 snapshot.symbol,
@@ -1698,6 +1788,14 @@ class TradingApp(QtWidgets.QMainWindow):
                 price=exit_price,
                 reduce_only=True,
                 position_idx_override=position_idx,
+            )
+            self._add_history_entry(
+                snapshot.symbol,
+                "Sell" if direction > 0 else "Buy",
+                "Exit",
+                abs(position.qty),
+                exit_price,
+                reason=exit_reason,
             )
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
