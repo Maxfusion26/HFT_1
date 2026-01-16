@@ -1368,10 +1368,26 @@ class TradingApp(QtWidgets.QMainWindow):
             hit_sl = last_price <= sl_price if direction > 0 else last_price >= sl_price
         return tp_price, sl_price, hit_tp, hit_sl
 
-    def _resolve_exit_reason(self, hit_tp: bool, hit_sl: bool) -> Optional[str]:
+    def _resolve_exit_reason(
+        self,
+        hit_tp: bool,
+        hit_sl: bool,
+        entry_price: Optional[float] = None,
+        last_price: Optional[float] = None,
+        side: Optional[str] = None,
+    ) -> Optional[str]:
         if hit_tp and hit_sl:
-            logging.warning("TP and SL both triggered; skipping exit to enforce strict rules.")
-            return None
+            if entry_price is None or last_price is None or side is None:
+                logging.warning("TP and SL both triggered; defaulting to TP due to missing context.")
+                return "TP"
+            direction = 1 if side.lower() == "buy" else -1
+            in_profit = (last_price - entry_price) * direction >= 0
+            exit_reason = "TP" if in_profit else "SL"
+            logging.warning(
+                "TP and SL both triggered; resolving to %s based on P&L.",
+                exit_reason,
+            )
+            return exit_reason
         if hit_tp:
             return "TP"
         if hit_sl:
@@ -1391,7 +1407,13 @@ class TradingApp(QtWidgets.QMainWindow):
                 last_price,
                 position.side,
             )
-            exit_reason = self._resolve_exit_reason(hit_tp, hit_sl)
+            exit_reason = self._resolve_exit_reason(
+                hit_tp,
+                hit_sl,
+                entry_price=position.entry_price,
+                last_price=last_price,
+                side=position.side,
+            )
             if exit_reason:
                 close_side = "Sell" if direction > 0 else "Buy"
                 position_idx = (
@@ -1580,7 +1602,13 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         position.tp_price = tp_price
         position.sl_price = sl_price
-        exit_reason = self._resolve_exit_reason(hit_tp, hit_sl)
+        exit_reason = self._resolve_exit_reason(
+            hit_tp,
+            hit_sl,
+            entry_price=position.entry_price,
+            last_price=snapshot.mid,
+            side="Buy" if direction > 0 else "Sell",
+        )
         if exit_reason:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
