@@ -513,12 +513,13 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
 
-        header = QtWidgets.QHBoxLayout()
+        header_widget = QtWidgets.QWidget()
+        header = QtWidgets.QHBoxLayout(header_widget)
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(6)
+        header.setSpacing(2)
         self.time_status_label = QtWidgets.QLabel("Moscow: -- | Bybit: -- | Ping: -- ms")
         self.time_status_label.setProperty("role", "time_status")
         time_font = QtGui.QFont()
@@ -528,6 +529,7 @@ class TradingApp(QtWidgets.QMainWindow):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
+        self.time_status_label.setMinimumHeight(18)
 
         self.connection_status_label = QtWidgets.QLabel("Disconnected")
         self.connection_status_label.setProperty("status", "idle")
@@ -535,6 +537,14 @@ class TradingApp(QtWidgets.QMainWindow):
         self.trading_status_label.setProperty("status", "idle")
         self.connection_status_label.setProperty("role", "status")
         self.trading_status_label.setProperty("role", "status")
+        self.connection_status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.trading_status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
 
         header.addWidget(self.time_status_label)
         header.addWidget(self.connection_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
@@ -548,13 +558,13 @@ class TradingApp(QtWidgets.QMainWindow):
         left_panel.setProperty("panel", "true")
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
+        left_layout.setSpacing(4)
 
         right_panel = QtWidgets.QWidget()
         right_panel.setProperty("panel", "true")
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
+        right_layout.setSpacing(4)
 
         creds_group = QtWidgets.QGroupBox("Credentials")
         creds_group.setProperty("card", "true")
@@ -777,7 +787,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.main_splitter.addWidget(right_panel)
         self.main_splitter.setSizes([420, 560])
 
-        layout.addLayout(header)
+        header_widget.setMaximumHeight(24)
+        layout.addWidget(header_widget)
         layout.addWidget(self.main_splitter)
 
     def _setup_backtest_tab(self) -> None:
@@ -864,32 +875,32 @@ class TradingApp(QtWidgets.QMainWindow):
             """
             QMainWindow { background: #0b0f1a; }
             QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
-            QLabel[role="time_status"] { font-size: 12.5px; }
-            QLabel[role="status"] { font-size: 11px; }
+            QLabel[role="time_status"] { font-size: 12px; }
+            QLabel[role="status"] { font-size: 10.5px; }
             QLabel[role="title"] { font-size: 19px; font-weight: 600; color: #f8fafc; letter-spacing: 0.2px; }
             QLabel[role="subtitle"] { font-size: 11.5px; color: #94a3b8; }
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 6px; background: #0f1422; padding: 8px; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 2px; background: #0f1422; padding: 5px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; font-weight: 600; }
             QGroupBox[card="true"] { background: #0f172a; }
-            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 4px; }
+            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 1px; }
             QFrame[divider="true"] { color: #1f2937; background: #1f2937; min-height: 1px; max-height: 1px; }
-            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 6px 12px; }
+            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 5px 10px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 5px; border-radius: 8px; min-height: 26px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 4px; border-radius: 8px; min-height: 24px; }
             QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { width: 20px; }
             QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow { width: 10px; height: 10px; }
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; alternate-background-color: #0f172a; }
-            QTableWidget::item { padding: 5px; }
-            QTableWidget[role="positions"]::item { font-weight: 600; font-size: 12.5px; }
-            QHeaderView::section { background: #111827; color: #94a3b8; padding: 6px; border: none; font-weight: 600; }
+            QTableWidget::item { padding: 4px; }
+            QTableWidget[role="positions"]::item { font-weight: 600; font-size: 12px; }
+            QHeaderView::section { background: #111827; color: #94a3b8; padding: 5px; border: none; font-weight: 600; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
-            QTabBar::tab { background: #111827; color: #94a3b8; padding: 6px 12px; border-radius: 10px; margin-right: 6px; min-width: 100px; }
+            QTabBar::tab { background: #111827; color: #94a3b8; padding: 5px 10px; border-radius: 10px; margin-right: 6px; min-width: 90px; }
             QTabBar::tab:selected { background: #1f2937; color: #e6edf3; }
             """
         )
