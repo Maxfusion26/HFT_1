@@ -2565,6 +2565,12 @@ class TradingApp(QtWidgets.QMainWindow):
     ) -> Optional[EntrySignal]:
         if snapshot.mid <= 0:
             return None
+        tp_pct = self.tp_input.value() / 100
+        sl_pct = self.sl_input.value() / 100
+        if tp_pct <= 0 or sl_pct <= 0:
+            return None
+        if tp_pct < sl_pct * 2:
+            return None
         change_24h = self.ticker_change_map.get(snapshot.symbol, 0.0) / 100
         details = self.ticker_detail_map.get(snapshot.symbol, {})
         last_price = details.get("last_price") or snapshot.mid
@@ -2574,7 +2580,7 @@ class TradingApp(QtWidgets.QMainWindow):
         volume = float(details.get("volume", 0.0) or 0.0)
         spread = snapshot.ask - snapshot.bid
         spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
-        if spread_pct > 0.0035:
+        if spread_pct > min(sl_pct * 0.5, 0.0015):
             return None
         range_span = max(high_price - low_price, 0.0)
         range_mid = (high_price + low_price) / 2 if range_span > 0 else last_price
@@ -2590,10 +2596,10 @@ class TradingApp(QtWidgets.QMainWindow):
         momentum = change_24h * 0.45
         range_bias = range_pos * 0.2
         volatility_pct = snapshot.volatility
-        if range_pct <= 0.002 or volatility_pct < 0.6:
+        if range_pct <= 0.003 or volatility_pct < max(0.9, tp_pct * 100):
             return None
         liquidity_hint = turnover if turnover > 0 else volume * last_price
-        if liquidity_hint > 0 and liquidity_hint < 1_000_000:
+        if liquidity_hint > 0 and liquidity_hint < 2_500_000:
             return None
         regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
         if regime_trend:
@@ -2601,6 +2607,8 @@ class TradingApp(QtWidgets.QMainWindow):
         else:
             score = (-range_bias * 0.7) + (order_flow * 0.3) + (micro_bias * 0.3) + (momentum * 0.2)
         direction = 1 if score >= 0 else -1
+        if micro_edge * direction <= 0:
+            return None
         confirmations = sum(
             1
             for signal in (momentum, order_flow, micro_bias, range_bias)
@@ -2609,20 +2617,20 @@ class TradingApp(QtWidgets.QMainWindow):
         flow_strength = abs(imbalance) * (1 - min(spread_pct * 50, 0.5))
         trend_strength = abs(change_24h)
         range_strength = abs(range_pos)
-        if flow_strength < 0.08 and trend_strength < 0.004:
+        if flow_strength < 0.1 and trend_strength < 0.006:
             return None
-        if confirmations < 3 or range_strength < 0.1:
+        if confirmations < 4 or range_strength < 0.15:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
         confidence = abs(score) * volatility_boost * liquidity_boost
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
-        threshold = required_edge + (spread_pct * 0.4)
+        threshold = required_edge + (spread_pct * 0.6)
         target_pct = max(self.tp_input.value(), 1.0) / 100
         expected_move = (volatility_pct / 100) * 0.7 + abs(change_24h) * 0.2 + range_pct * 0.1
-        if expected_move < target_pct * 0.8:
+        if expected_move < target_pct * 1.1:
             return None
-        if confidence <= threshold:
+        if confidence <= threshold * 1.5:
             return None
         reason = "Trend+Flow" if regime_trend else "MeanRevert+Flow"
         return EntrySignal(
