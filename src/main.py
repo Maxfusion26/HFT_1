@@ -6,7 +6,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from pathlib import Path
@@ -19,6 +19,7 @@ import requests
 CONFIG_DIR = Path.home() / ".hft_bybit"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "trading.log"
+PNL_HISTORY_FILE = Path(__file__).resolve().parents[1] / "pnl_history.json"
 
 
 @dataclass
@@ -66,6 +67,9 @@ class OrderRequest:
     order_type: str
     limit_price: Optional[float]
     reduce_only: bool = False
+    tp_price: Optional[float] = None
+    sl_price: Optional[float] = None
+    set_trading_stop: bool = False
     retry: int = 0
     remaining_qty: Optional[float] = None
 
@@ -78,6 +82,28 @@ class PositionSnapshot:
     entry_price: float
     unrealized_pnl: float
     position_idx: Optional[int] = None
+
+
+@dataclass
+class PositionHistoryEntry:
+    timestamp: datetime
+    symbol: str
+    side: str
+    action: str
+    qty: float
+    price: float
+    notional_usdt: float
+    pnl_usdt: Optional[float] = None
+    reason: str = ""
+
+
+@dataclass
+class TradingStopRequest:
+    symbol: str
+    position_idx: int
+    take_profit: Optional[float]
+    stop_loss: Optional[float]
+    source: str = "entry"
 
 
 class ConfigManager:
@@ -167,6 +193,26 @@ class BybitRestClient:
             return []
         return payload.get("result", {}).get("list", [])
 
+    def fetch_server_time(self) -> Optional[float]:
+        endpoint = "/v5/market/time"
+        response = requests.get(f"{self.base_url}{endpoint}", timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return None
+        result = payload.get("result", {})
+        if "timeSecond" in result:
+            try:
+                return float(result["timeSecond"]) * 1000
+            except (TypeError, ValueError):
+                return None
+        if "timeNano" in result:
+            try:
+                return float(result["timeNano"]) / 1_000_000
+            except (TypeError, ValueError):
+                return None
+        return None
+
     def fetch_position_mode(self) -> Optional[str]:
         endpoint = "/v5/position/list"
         timestamp = str(int(time.time() * 1000))
@@ -247,6 +293,29 @@ class BybitRestClient:
                 return positions
         return []
 
+    def fetch_position_history(self, limit: int = 50) -> list:
+        endpoint = "/v5/position/closed-pnl"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        params = {"category": "linear", "limit": limit}
+        query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        signature = self._sign(timestamp, recv_window, query)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+        }
+        response = requests.get(
+            f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return []
+        return payload.get("result", {}).get("list", [])
+
     def fetch_wallet_balance(self) -> dict:
         endpoint = "/v5/account/wallet-balance"
         timestamp = str(int(time.time() * 1000))
@@ -269,6 +338,48 @@ class BybitRestClient:
         if payload.get("retCode") != 0:
             return {}
         return payload.get("result", {})
+
+    def set_trading_stop(
+        self,
+        symbol: str,
+        position_idx: int,
+        take_profit: Optional[float],
+        stop_loss: Optional[float],
+    ) -> dict:
+        if take_profit is None and stop_loss is None:
+            raise ValueError("At least one of take_profit or stop_loss must be set.")
+        endpoint = "/v5/position/trading-stop"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": position_idx,
+            "tpslMode": "Full",
+            "tpTriggerBy": "LastPrice",
+            "slTriggerBy": "LastPrice",
+            "tpOrderType": "Market",
+            "slOrderType": "Market",
+        }
+        if take_profit is not None:
+            payload["takeProfit"] = f"{take_profit:.6f}"
+        if stop_loss is not None:
+            payload["stopLoss"] = f"{stop_loss:.6f}"
+        payload_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        signature = self._sign(timestamp, recv_window, payload_str)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            f"{self.base_url}{endpoint}", data=payload_str, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
 
 class QtLogHandler(logging.Handler):
     def __init__(self, widget: QtWidgets.QTextEdit) -> None:
@@ -366,6 +477,42 @@ class PortfolioThread(QtCore.QThread):
             self.finished.emit(positions, balance, None)
         except Exception as exc:  # noqa: BLE001
             self.finished.emit([], {}, exc)
+
+
+class HistoryThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(list, object)
+
+    def __init__(self, client: BybitRestClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            history = self.client.fetch_position_history()
+            self.finished.emit(history, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit([], exc)
+
+
+class TradingStopThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(object, object, object)
+
+    def __init__(self, client: BybitRestClient, request: TradingStopRequest) -> None:
+        super().__init__()
+        self.client = client
+        self.request = request
+
+    def run(self) -> None:
+        try:
+            response = self.client.set_trading_stop(
+                symbol=self.request.symbol,
+                position_idx=self.request.position_idx,
+                take_profit=self.request.take_profit,
+                stop_loss=self.request.stop_loss,
+            )
+            self.finished.emit(self.request, response, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit(self.request, None, exc)
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -434,7 +581,7 @@ class TradingApp(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("HFT Bybit Futures - Adaptive Market Maker")
-        self.resize(980, 660)
+        self.resize(920, 600)
         self.config = ConfigManager(CONFIG_FILE)
         self.strategy = HFTStrategy()
         self.backtest_engine = BacktestEngine(self.strategy)
@@ -443,18 +590,32 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_detected: Optional[str] = None
         self.limit_shift_attempts: Dict[tuple, int] = {}
         self.order_threads: List[OrderThread] = []
+        self.trading_stop_threads: List[TradingStopThread] = []
         self.ticker_thread: Optional[TickerThread] = None
         self.instrument_thread: Optional[InstrumentThread] = None
         self.instrument_specs_ready = False
         self.portfolio_thread: Optional[PortfolioThread] = None
+        self.history_thread: Optional[HistoryThread] = None
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
         self.ticker_last_price_map: Dict[str, float] = {}
         self.selected_symbols: List[str] = []
         self._updating_symbol_list = False
         self.open_positions: List[PositionSnapshot] = []
+        self.portfolio_ready = False
+        self.trading_stop_cache: Dict[tuple, tuple[float, float]] = {}
+        self._last_log_events: Dict[str, str] = {}
+        self.pnl_history: List[PositionHistoryEntry] = []
+        self.position_history: List[PositionHistoryEntry] = []
+        self.history_keys: set[str] = set()
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(2000)
+        self.history_timer = QtCore.QTimer(self)
+        self.history_timer.setInterval(10_000)
+        self.ticker_timer = QtCore.QTimer(self)
+        self.ticker_timer.setInterval(2000)
+        self.time_status_timer = QtCore.QTimer(self)
+        self.time_status_timer.setInterval(2000)
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 5.0},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 5.0},
@@ -469,6 +630,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self._setup_ui()
         self._apply_style()
         self._load_config()
+        self._load_pnl_history()
         self._setup_logging()
         self._wire_signals()
         self._refresh_symbol_table()
@@ -480,53 +642,71 @@ class TradingApp(QtWidgets.QMainWindow):
         self.trading_tab = QtWidgets.QWidget()
         self.backtest_tab = QtWidgets.QWidget()
         self.dashboard_tab = QtWidgets.QWidget()
+        self.history_tab = QtWidgets.QWidget()
         self.tabs.addTab(self.trading_tab, "Trading")
         self.tabs.addTab(self.backtest_tab, "Backtesting")
         self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.tabs.addTab(self.history_tab, "History")
 
         self._setup_trading_tab()
         self._setup_backtest_tab()
         self._setup_dashboard_tab()
+        self._setup_history_tab()
 
     def _setup_trading_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.trading_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
 
-        header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("Bybit Futures HFT Suite")
-        title.setProperty("role", "title")
-        subtitle = QtWidgets.QLabel("Adaptive market maker • Momentum overlay")
-        subtitle.setProperty("role", "subtitle")
-        title_wrap = QtWidgets.QVBoxLayout()
-        title_wrap.addWidget(title)
-        title_wrap.addWidget(subtitle)
+        header_widget = QtWidgets.QWidget()
+        header = QtWidgets.QHBoxLayout(header_widget)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(2)
+        self.time_status_label = QtWidgets.QLabel("Moscow: -- | Bybit: -- | Ping: -- ms")
+        self.time_status_label.setProperty("role", "time_status")
+        time_font = QtGui.QFont()
+        time_font.setBold(True)
+        self.time_status_label.setFont(time_font)
+        self.time_status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.time_status_label.setMinimumHeight(18)
 
         self.connection_status_label = QtWidgets.QLabel("Disconnected")
         self.connection_status_label.setProperty("status", "idle")
         self.trading_status_label = QtWidgets.QLabel("Auto-trading Off")
         self.trading_status_label.setProperty("status", "idle")
-        status_wrap = QtWidgets.QVBoxLayout()
-        status_wrap.addWidget(self.connection_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
-        status_wrap.addWidget(self.trading_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+        self.connection_status_label.setProperty("role", "status")
+        self.trading_status_label.setProperty("role", "status")
+        self.connection_status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.trading_status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
 
-        header.addLayout(title_wrap)
-        header.addStretch()
-        header.addLayout(status_wrap)
+        header.addWidget(self.time_status_label)
+        header.addWidget(self.connection_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+        header.addWidget(self.trading_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.main_splitter.setHandleWidth(4)
+        self.main_splitter.setChildrenCollapsible(False)
 
         left_panel = QtWidgets.QWidget()
         left_panel.setProperty("panel", "true")
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(4)
 
         right_panel = QtWidgets.QWidget()
         right_panel.setProperty("panel", "true")
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
+        right_layout.setSpacing(4)
 
         creds_group = QtWidgets.QGroupBox("Credentials")
         creds_group.setProperty("card", "true")
@@ -749,7 +929,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.main_splitter.addWidget(right_panel)
         self.main_splitter.setSizes([420, 560])
 
-        layout.addLayout(header)
+        header_widget.setMaximumHeight(24)
+        layout.addWidget(header_widget)
         layout.addWidget(self.main_splitter)
 
     def _setup_backtest_tab(self) -> None:
@@ -763,21 +944,67 @@ class TradingApp(QtWidgets.QMainWindow):
         self.backtest_button = QtWidgets.QPushButton("Run Backtest")
         self.backtest_output = QtWidgets.QTextEdit()
         self.backtest_output.setReadOnly(True)
+        self.backtest_chart = QtWidgets.QTextEdit()
+        self.backtest_chart.setReadOnly(True)
+        self.backtest_chart.setPlaceholderText("Backtest chart preview")
 
         form.addRow("Simulated steps", self.backtest_steps_input)
         layout.addLayout(form)
         layout.addWidget(self.backtest_button)
         layout.addWidget(QtWidgets.QLabel("Backtest Summary"))
         layout.addWidget(self.backtest_output)
+        layout.addWidget(QtWidgets.QLabel("Backtest Chart Preview"))
+        layout.addWidget(self.backtest_chart)
+
+    def _setup_history_tab(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self.history_tab)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        header = QtWidgets.QLabel("Position History")
+        header.setProperty("role", "title")
+        layout.addWidget(header)
+
+        self.history_table = QtWidgets.QTableWidget(0, 9)
+        self.history_table.setHorizontalHeaderLabels(
+            ["Time", "Symbol", "Side", "Action", "Qty", "Price", "Notional (USDT)", "PnL (USDT)", "Reason"]
+        )
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.history_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.history_table)
 
     def _setup_dashboard_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.dashboard_tab)
         self.pnl_label = QtWidgets.QLabel("P&L: 0.0 USDT")
         self.pnl_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        filter_row = QtWidgets.QHBoxLayout()
+        filter_row.addWidget(QtWidgets.QLabel("Start"))
+        self.pnl_start_input = QtWidgets.QDateTimeEdit()
+        self.pnl_start_input.setCalendarPopup(True)
+        filter_row.addWidget(self.pnl_start_input)
+        filter_row.addWidget(QtWidgets.QLabel("End"))
+        self.pnl_end_input = QtWidgets.QDateTimeEdit()
+        self.pnl_end_input.setCalendarPopup(True)
+        filter_row.addWidget(self.pnl_end_input)
+        self.pnl_apply_button = QtWidgets.QPushButton("Apply range")
+        filter_row.addWidget(self.pnl_apply_button)
+        filter_row.addStretch()
+
+        now = datetime.utcnow()
+        self.pnl_start_input.setDateTime(QtCore.QDateTime(now - timedelta(days=7)))
+        self.pnl_end_input.setDateTime(QtCore.QDateTime(now))
+
         self.pnl_chart = QtWidgets.QTextEdit()
         self.pnl_chart.setReadOnly(True)
         self.pnl_chart.setPlaceholderText("P&L chart placeholder")
         layout.addWidget(self.pnl_label)
+        layout.addLayout(filter_row)
         layout.addWidget(self.pnl_chart)
 
     def _build_portfolio_section(self) -> QtWidgets.QWidget:
@@ -835,31 +1062,33 @@ class TradingApp(QtWidgets.QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow { background: #0b0f1a; }
-            QLabel, QCheckBox { color: #e6edf3; font-size: 12.5px; }
+            QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
+            QLabel[role="time_status"] { font-size: 12px; }
+            QLabel[role="status"] { font-size: 10.5px; }
             QLabel[role="title"] { font-size: 19px; font-weight: 600; color: #f8fafc; letter-spacing: 0.2px; }
             QLabel[role="subtitle"] { font-size: 11.5px; color: #94a3b8; }
             QLabel[status="idle"] { color: #94a3b8; }
             QLabel[status="ok"] { color: #22c55e; }
             QLabel[status="warn"] { color: #f59e0b; }
-            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 8px; background: #0f1422; padding: 10px; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 2px; background: #0f1422; padding: 5px; }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; font-weight: 600; }
             QGroupBox[card="true"] { background: #0f172a; }
-            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 6px; }
+            QWidget[panel="true"] { background: #0b1220; border: 1px solid #101826; border-radius: 12px; padding: 1px; }
             QFrame[divider="true"] { color: #1f2937; background: #1f2937; min-height: 1px; max-height: 1px; }
-            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 7px 16px; }
+            QPushButton { background: #1f6feb; color: white; border-radius: 10px; padding: 5px 10px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1d4ed8, stop:1 #3b82f6); }
             QPushButton:checked { background: #22c55e; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 6px; border-radius: 8px; min-height: 30px; }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #0b1220; color: #e6edf3; border: 1px solid #1f2937; padding: 4px; border-radius: 8px; min-height: 24px; }
             QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { width: 20px; }
             QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow { width: 10px; height: 10px; }
             QTextEdit { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTableWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; alternate-background-color: #0f172a; }
-            QTableWidget::item { padding: 5px; }
-            QTableWidget[role="positions"]::item { font-weight: 600; font-size: 12.5px; }
-            QHeaderView::section { background: #111827; color: #94a3b8; padding: 8px; border: none; font-weight: 600; }
+            QTableWidget::item { padding: 4px; }
+            QTableWidget[role="positions"]::item { font-weight: 600; font-size: 12px; }
+            QHeaderView::section { background: #111827; color: #94a3b8; padding: 5px; border: none; font-weight: 600; }
             QListWidget { background: #0b1220; color: #c9d1d9; border: 1px solid #1f2937; border-radius: 10px; }
             QTabWidget::pane { border: none; }
-            QTabBar::tab { background: #111827; color: #94a3b8; padding: 7px 14px; border-radius: 10px; margin-right: 6px; min-width: 120px; }
+            QTabBar::tab { background: #111827; color: #94a3b8; padding: 5px 10px; border-radius: 10px; margin-right: 6px; min-width: 90px; }
             QTabBar::tab:selected { background: #1f2937; color: #e6edf3; }
             """
         )
@@ -945,8 +1174,12 @@ class TradingApp(QtWidgets.QMainWindow):
         self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
         self.trading_timer.timeout.connect(self._run_trading_cycle)
         self.portfolio_timer.timeout.connect(self._request_portfolio)
+        self.ticker_timer.timeout.connect(self._request_tickers)
+        self.time_status_timer.timeout.connect(self._update_time_status)
+        self.history_timer.timeout.connect(self._request_history)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
+        self.pnl_apply_button.clicked.connect(self._refresh_pnl_chart)
 
     def _persist_config(self) -> None:
         if not self.auto_save_checkbox.isChecked():
@@ -997,10 +1230,16 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.client = BybitRestClient(api_key, api_secret, base_url)
         self.connected = True
+        self.portfolio_ready = False
         self.position_mode_detected = self._detect_position_mode()
         self._request_tickers()
         self._request_instruments()
+        self.ticker_timer.start()
         self.portfolio_timer.start()
+        self.time_status_timer.start()
+        self.history_timer.start()
+        self._request_history()
+        self._update_time_status()
         logging.info("Connected to Bybit futures API at %s", base_url)
         self.connection_status_label.setText("Status: Connected")
         self.connection_status_label.setProperty("status", "ok")
@@ -1015,7 +1254,15 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_last_price_map = {}
         self.instrument_specs_ready = False
         self.open_positions = []
+        self.portfolio_ready = False
+        self.trading_stop_cache = {}
+        self.ticker_timer.stop()
         self.portfolio_timer.stop()
+        self.time_status_timer.stop()
+        self.history_timer.stop()
+        if self.history_thread and self.history_thread.isRunning():
+            self.history_thread.quit()
+        self.history_thread = None
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
         self.instrument_thread = None
@@ -1048,6 +1295,61 @@ class TradingApp(QtWidgets.QMainWindow):
         logging.info(
             "Strategy: hybrid market making + momentum with inventory skew and fee-aware thresholds."
         )
+
+    def _log_once(self, key: str, message: str, level: int = logging.INFO) -> None:
+        if self._last_log_events.get(key) == message:
+            return
+        logging.log(level, message)
+        self._last_log_events[key] = message
+
+    def _load_pnl_history(self) -> None:
+        if not PNL_HISTORY_FILE.exists():
+            return
+        try:
+            payload = json.loads(PNL_HISTORY_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return
+        entries = []
+        for item in payload if isinstance(payload, list) else []:
+            try:
+                timestamp = datetime.fromisoformat(item["timestamp"])
+                pnl_usdt = item.get("pnl_usdt")
+                if pnl_usdt is None:
+                    continue
+                entry = PositionHistoryEntry(
+                    timestamp=timestamp,
+                    symbol=item.get("symbol", ""),
+                    side=item.get("side", ""),
+                    action=item.get("action", "Exit"),
+                    qty=float(item.get("qty", 0) or 0),
+                    price=float(item.get("price", 0) or 0),
+                    notional_usdt=float(item.get("notional_usdt", 0) or 0),
+                    pnl_usdt=float(pnl_usdt),
+                    reason=item.get("reason", "Stored"),
+                )
+            except (TypeError, ValueError, KeyError):
+                continue
+            entries.append(entry)
+        if entries:
+            self.pnl_history = entries[:1000]
+
+    def _save_pnl_history(self) -> None:
+        payload = []
+        for entry in self.pnl_history[:1000]:
+            payload.append(
+                {
+                    "timestamp": entry.timestamp.isoformat(),
+                    "symbol": entry.symbol,
+                    "side": entry.side,
+                    "action": entry.action,
+                    "qty": entry.qty,
+                    "price": entry.price,
+                    "notional_usdt": entry.notional_usdt,
+                    "pnl_usdt": entry.pnl_usdt,
+                    "reason": entry.reason,
+                }
+            )
+        PNL_HISTORY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _refresh_symbol_table(self) -> None:
         if self.client and not self.ticker_symbols:
@@ -1164,6 +1466,34 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_thread.finished.connect(self._on_portfolio_ready)
         self.portfolio_thread.start()
 
+    def _request_history(self) -> None:
+        if not self.client or (self.history_thread and self.history_thread.isRunning()):
+            return
+        self.history_thread = HistoryThread(self.client)
+        self.history_thread.finished.connect(self._on_history_ready)
+        self.history_thread.start()
+
+    def _update_time_status(self) -> None:
+        moscow_time = datetime.now(timezone.utc).astimezone(
+            timezone(timedelta(hours=3))
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        bybit_time_text = "--"
+        ping_text = "--"
+        if self.client:
+            try:
+                start = time.time()
+                server_time_ms = self.client.fetch_server_time()
+                ping_ms = (time.time() - start) * 1000
+                ping_text = f"{ping_ms:.0f}"
+                if server_time_ms is not None:
+                    server_dt = datetime.fromtimestamp(server_time_ms / 1000, tz=timezone.utc)
+                    bybit_time_text = server_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except requests.RequestException as exc:
+                logging.warning("Failed to fetch Bybit server time: %s", exc)
+        self.time_status_label.setText(
+            f"Moscow: {moscow_time} | Bybit: {bybit_time_text} | Ping: {ping_text} ms"
+        )
+
     def _on_instruments_ready(self, specs: dict, error: object) -> None:
         if error:
             logging.error("Failed to fetch instrument specs: %s", error)
@@ -1189,6 +1519,12 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self._update_portfolio(balance, positions)
 
+    def _on_history_ready(self, history: list, error: object) -> None:
+        if error:
+            logging.error("Failed to fetch position history: %s", error)
+            return
+        self._update_history_from_api(history)
+
     def _update_portfolio(self, balance: dict, positions: list) -> None:
         self.open_positions = []
         total_unrealized = 0.0
@@ -1198,10 +1534,12 @@ class TradingApp(QtWidgets.QMainWindow):
                 continue
             self.open_positions.append(snapshot)
             total_unrealized += snapshot.unrealized_pnl
+        self.portfolio_ready = True
 
         self._render_portfolio_table()
         self._render_balance_summary(balance, total_unrealized)
         self._sync_local_positions()
+        self._sync_trading_stops()
         self._monitor_positions_for_exit()
 
     def _parse_portfolio_position(self, item: dict) -> Optional[PositionSnapshot]:
@@ -1304,6 +1642,133 @@ class TradingApp(QtWidgets.QMainWindow):
                 pnl_item.setForeground(pnl_color)
         self.open_positions_label.setText(f"Open positions: {len(self.open_positions)}")
 
+    def _add_history_entry(
+        self,
+        symbol: str,
+        side: str,
+        action: str,
+        qty: float,
+        price: float,
+        notional_usdt: float,
+        pnl_usdt: Optional[float] = None,
+        reason: str = "",
+    ) -> None:
+        entry = PositionHistoryEntry(
+            timestamp=datetime.utcnow(),
+            symbol=symbol,
+            side=side,
+            action=action,
+            qty=qty,
+            price=price,
+            notional_usdt=notional_usdt,
+            pnl_usdt=pnl_usdt,
+            reason=reason,
+        )
+        key = (
+            f"{entry.timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|"
+            f"{entry.qty:.6f}|{entry.price:.4f}|{entry.notional_usdt:.2f}|"
+            f"{entry.pnl_usdt if entry.pnl_usdt is not None else 'na'}|{entry.reason}"
+        )
+        self.history_keys.add(key)
+        self.position_history.insert(0, entry)
+        if entry.pnl_usdt is not None:
+            self.pnl_history.insert(0, entry)
+            self._save_pnl_history()
+        if len(self.position_history) > 500:
+            self.position_history = self.position_history[:500]
+        self._render_history_table()
+        self._refresh_pnl_chart()
+
+    def _render_history_table(self) -> None:
+        if not hasattr(self, "history_table"):
+            return
+        self.history_table.setRowCount(len(self.position_history))
+        for row, entry in enumerate(self.position_history):
+            self.history_table.setItem(
+                row,
+                0,
+                QtWidgets.QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.symbol))
+            self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(entry.side))
+            self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(entry.action))
+            self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{entry.qty:.6f}"))
+            self.history_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{entry.price:.4f}"))
+            self.history_table.setItem(
+                row, 6, QtWidgets.QTableWidgetItem(f"{entry.notional_usdt:.2f}")
+            )
+            pnl_text = "--" if entry.pnl_usdt is None else f"{entry.pnl_usdt:.2f}"
+            self.history_table.setItem(row, 7, QtWidgets.QTableWidgetItem(pnl_text))
+            self.history_table.setItem(row, 8, QtWidgets.QTableWidgetItem(entry.reason))
+            if entry.pnl_usdt is not None:
+                pnl_color = (
+                    QtGui.QColor(34, 197, 94, 70)
+                    if entry.pnl_usdt > 0
+                    else QtGui.QColor(239, 68, 68, 70)
+                )
+                for column in range(self.history_table.columnCount()):
+                    item = self.history_table.item(row, column)
+                    if item is not None:
+                        item.setBackground(pnl_color)
+
+    def _update_history_from_api(self, history: list) -> None:
+        if not history:
+            return
+        new_entries = []
+        for item in history:
+            symbol = item.get("symbol")
+            side = item.get("side") or ""
+            qty_raw = item.get("qty") or item.get("closedSize") or item.get("size")
+            price_raw = (
+                item.get("avgExitPrice")
+                or item.get("avgPrice")
+                or item.get("exitPrice")
+                or item.get("price")
+            )
+            pnl_raw = item.get("closedPnl") or item.get("pnl") or item.get("realisedPnl")
+            ts_raw = item.get("updatedTime") or item.get("createdTime") or item.get("execTime")
+            if not symbol or not qty_raw or not price_raw or not ts_raw:
+                continue
+            try:
+                qty = float(qty_raw)
+                price = float(price_raw)
+                ts_ms = int(float(ts_raw))
+                pnl_usdt = float(pnl_raw) if pnl_raw is not None else None
+            except (TypeError, ValueError):
+                continue
+            timestamp = datetime.utcfromtimestamp(ts_ms / 1000)
+            notional = qty * price
+            entry = PositionHistoryEntry(
+                timestamp=timestamp,
+                symbol=symbol,
+                side=side or "Unknown",
+                action="Exit",
+                qty=qty,
+                price=price,
+                notional_usdt=notional,
+                pnl_usdt=pnl_usdt,
+                reason="API",
+            )
+            key = (
+                f"{timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|"
+                f"{entry.qty:.6f}|{entry.price:.4f}|{entry.notional_usdt:.2f}|"
+                f"{entry.pnl_usdt if entry.pnl_usdt is not None else 'na'}|{entry.reason}"
+            )
+            if key in self.history_keys:
+                continue
+            self.history_keys.add(key)
+            new_entries.append(entry)
+        if new_entries:
+            self.position_history = new_entries + self.position_history
+            for entry in new_entries:
+                if entry.pnl_usdt is not None:
+                    self.pnl_history.insert(0, entry)
+            if any(entry.pnl_usdt is not None for entry in new_entries):
+                self._save_pnl_history()
+            self.position_history = self.position_history[:500]
+            self._render_history_table()
+            self._refresh_pnl_chart()
+
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
         total_equity = "--"
         total_wallet = "--"
@@ -1316,6 +1781,67 @@ class TradingApp(QtWidgets.QMainWindow):
         self.balance_label.setText(f"Balance: {total_wallet}")
         self.equity_label.setText(f"Equity: {total_equity}")
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
+
+    def _refresh_pnl_chart(self) -> None:
+        if not hasattr(self, "pnl_chart"):
+            return
+        if not hasattr(self, "pnl_start_input") or not hasattr(self, "pnl_end_input"):
+            return
+        start_dt = self.pnl_start_input.dateTime().toPyDateTime()
+        end_dt = self.pnl_end_input.dateTime().toPyDateTime()
+        if end_dt < start_dt:
+            start_dt, end_dt = end_dt, start_dt
+        entries = [
+            entry
+            for entry in self.pnl_history
+            if entry.pnl_usdt is not None and start_dt <= entry.timestamp <= end_dt
+        ]
+        if not entries:
+            self.pnl_chart.setText("No P&L data for selected period.")
+            return
+        entries.sort(key=lambda item: item.timestamp)
+        running_total = 0.0
+        lines = []
+        for entry in entries:
+            running_total += float(entry.pnl_usdt or 0)
+            lines.append(
+                f"{entry.timestamp:%Y-%m-%d %H:%M:%S} | {running_total:,.2f} USDT"
+            )
+        self.pnl_chart.setText("\n".join(lines))
+
+    def _sync_trading_stops(self) -> None:
+        if not self.client or not self.connected:
+            return
+        for position in self.open_positions:
+            last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
+            if position.entry_price <= 0 or last_price <= 0:
+                continue
+            tp_price, sl_price = self._get_tp_sl_prices(
+                position.entry_price,
+                last_price,
+                position.side,
+            )
+            position_idx = (
+                position.position_idx
+                if position.position_idx is not None
+                else self._resolve_position_idx(position.side)
+            )
+            if position_idx is None:
+                continue
+            cache_key = (position.symbol, position_idx)
+            cached = self.trading_stop_cache.get(cache_key)
+            rounded = (round(tp_price, 6), round(sl_price, 6))
+            if cached == rounded:
+                continue
+            self._queue_trading_stop(
+                TradingStopRequest(
+                    symbol=position.symbol,
+                    position_idx=position_idx,
+                    take_profit=tp_price,
+                    stop_loss=sl_price,
+                    source="sync",
+                )
+            )
 
     def _get_tp_sl_prices(
         self,
@@ -1333,9 +1859,10 @@ class TradingApp(QtWidgets.QMainWindow):
         if entry_price > 0:
             profit_pct = (last_price - entry_price) / entry_price * direction
         trailing_enabled = self.trailing_tp_sl_checkbox.isChecked() and profit_pct >= trigger_pct
-        base_price = last_price if trailing_enabled else entry_price
-        tp_price = base_price * (1 + (tp_pct * direction))
-        sl_price = base_price * (1 - (sl_pct * direction))
+        tp_base_price = entry_price
+        sl_base_price = last_price if trailing_enabled else entry_price
+        tp_price = tp_base_price * (1 + (tp_pct * direction))
+        sl_price = sl_base_price * (1 - (sl_pct * direction))
         if base_tp is not None:
             tp_price = max(tp_price, base_tp) if direction > 0 else min(tp_price, base_tp)
         if base_sl is not None:
@@ -1368,6 +1895,32 @@ class TradingApp(QtWidgets.QMainWindow):
             hit_sl = last_price <= sl_price if direction > 0 else last_price >= sl_price
         return tp_price, sl_price, hit_tp, hit_sl
 
+    def _resolve_exit_reason(
+        self,
+        hit_tp: bool,
+        hit_sl: bool,
+        entry_price: Optional[float] = None,
+        last_price: Optional[float] = None,
+        side: Optional[str] = None,
+    ) -> Optional[str]:
+        if hit_tp and hit_sl:
+            if entry_price is None or last_price is None or side is None:
+                logging.warning("TP and SL both triggered; defaulting to TP due to missing context.")
+                return "TP"
+            direction = 1 if side.lower() == "buy" else -1
+            in_profit = (last_price - entry_price) * direction >= 0
+            exit_reason = "TP" if in_profit else "SL"
+            logging.warning(
+                "TP and SL both triggered; resolving to %s based on P&L.",
+                exit_reason,
+            )
+            return exit_reason
+        if hit_tp:
+            return "TP"
+        if hit_sl:
+            return "SL"
+        return None
+
     def _monitor_positions_for_exit(self) -> None:
         if not self.auto_trading_toggle.isChecked():
             return
@@ -1381,7 +1934,14 @@ class TradingApp(QtWidgets.QMainWindow):
                 last_price,
                 position.side,
             )
-            if hit_tp or hit_sl:
+            exit_reason = self._resolve_exit_reason(
+                hit_tp,
+                hit_sl,
+                entry_price=position.entry_price,
+                last_price=last_price,
+                side=position.side,
+            )
+            if exit_reason:
                 close_side = "Sell" if direction > 0 else "Buy"
                 position_idx = (
                     position.position_idx
@@ -1395,6 +1955,26 @@ class TradingApp(QtWidgets.QMainWindow):
                     price=last_price,
                     reduce_only=True,
                     position_idx_override=position_idx,
+                    force_market=True,
+                )
+                exit_pnl = (last_price - position.entry_price) * position.size * direction
+                self._add_history_entry(
+                    position.symbol,
+                    close_side,
+                    "Exit",
+                    position.size,
+                    last_price,
+                    notional_usdt=position.size * last_price,
+                    pnl_usdt=exit_pnl,
+                    reason=exit_reason,
+                )
+                logging.info(
+                    "%s exit %s @ %.2f (TP %.2f / SL %.2f)",
+                    position.symbol,
+                    exit_reason,
+                    last_price,
+                    tp_price,
+                    sl_price,
                 )
 
     def _run_backtest(self) -> None:
@@ -1419,7 +1999,7 @@ class TradingApp(QtWidgets.QMainWindow):
         chart_preview = "\n".join(
             f"{idx:03d} | {value:,.2f}" for idx, value in zip(timestamps[-30:], pnl_series[-30:])
         )
-        self.pnl_chart.setText(chart_preview)
+        self.backtest_chart.setText(chart_preview)
 
     def _run_trading_cycle(self) -> None:
         self.strategy.maker_fee = self.maker_fee_input.value() / 100
@@ -1471,27 +2051,44 @@ class TradingApp(QtWidgets.QMainWindow):
             return
 
         if abs(momentum) > required_edge:
+            if self.connected and not self.portfolio_ready:
+                self._log_once(
+                    "portfolio_not_synced",
+                    "Portfolio not synced yet; skipping new entry.",
+                )
+                return
             if self._count_open_positions() >= self.max_positions_input.value():
-                logging.info("Max positions reached; skipping new entry.")
+                self._log_once(
+                    "max_positions_reached",
+                    "Max positions reached; skipping new entry.",
+                )
                 return
             if not self.instrument_specs_ready:
-                logging.warning("Instrument specs not loaded; skipping entry sizing.")
+                self._log_once(
+                    "instrument_specs_missing",
+                    "Instrument specs not loaded; skipping entry sizing.",
+                    level=logging.WARNING,
+                )
                 return
             direction = 1 if momentum > 0 else -1
             entry = snapshot.ask if direction > 0 else snapshot.bid
             desired_usdt = self.position_size_input.value()
             reference_price = self.ticker_last_price_map.get(snapshot.symbol)
             if not reference_price:
-                logging.warning("No live price for %s; skipping entry sizing.", snapshot.symbol)
+                self._log_once(
+                    f"missing_live_price:{snapshot.symbol}",
+                    f"No live price for {snapshot.symbol}; skipping entry sizing.",
+                    level=logging.WARNING,
+                )
                 return
             raw_qty = desired_usdt / reference_price
             normalized_qty = self._normalize_qty(snapshot.symbol, raw_qty, reference_price)
             if normalized_qty is None:
-                logging.error(
-                    "Order rejected locally: %s %s %.2f USDT (min notional/min qty)",
-                    "Buy" if direction > 0 else "Sell",
-                    snapshot.symbol,
-                    desired_usdt,
+                self._log_once(
+                    f"order_rejected_min_notional:{snapshot.symbol}",
+                    "Order rejected locally: %s %s %.2f USDT (min notional/min qty)"
+                    % ("Buy" if direction > 0 else "Sell", snapshot.symbol, desired_usdt),
+                    level=logging.ERROR,
                 )
                 return
             position.qty = direction * normalized_qty
@@ -1509,6 +2106,19 @@ class TradingApp(QtWidgets.QMainWindow):
                 abs(position.qty),
                 price=entry,
                 position_idx_override=position_idx,
+                tp_price=position.tp_price,
+                sl_price=position.sl_price,
+                set_trading_stop=True,
+                force_market=True,
+            )
+            self._add_history_entry(
+                snapshot.symbol,
+                "Buy" if direction > 0 else "Sell",
+                "Entry",
+                abs(position.qty),
+                entry,
+                notional_usdt=abs(position.qty) * entry,
+                reason="Momentum",
             )
             logging.info(
                 "%s momentum entry %s @ %.2f (TP %.2f / SL %.2f)",
@@ -1549,7 +2159,11 @@ class TradingApp(QtWidgets.QMainWindow):
             position.sl_price = 0.0
             position.position_idx = None
             self.positions[snapshot.symbol] = position
-            logging.warning("Local position cleared (not on exchange): %s", snapshot.symbol)
+            self._log_once(
+                f"local_position_cleared:{snapshot.symbol}",
+                f"Local position cleared (not on exchange): {snapshot.symbol}",
+                level=logging.WARNING,
+            )
             return
         direction = 1 if position.qty > 0 else -1
         tp_price, sl_price, hit_tp, hit_sl = self._evaluate_tp_sl(
@@ -1561,7 +2175,14 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         position.tp_price = tp_price
         position.sl_price = sl_price
-        if hit_tp or hit_sl:
+        exit_reason = self._resolve_exit_reason(
+            hit_tp,
+            hit_sl,
+            entry_price=position.entry_price,
+            last_price=snapshot.mid,
+            side="Buy" if direction > 0 else "Sell",
+        )
+        if exit_reason:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
             position_side = "Buy" if direction > 0 else "Sell"
@@ -1577,11 +2198,22 @@ class TradingApp(QtWidgets.QMainWindow):
                 price=exit_price,
                 reduce_only=True,
                 position_idx_override=position_idx,
+                force_market=True,
+            )
+            self._add_history_entry(
+                snapshot.symbol,
+                "Sell" if direction > 0 else "Buy",
+                "Exit",
+                abs(position.qty),
+                exit_price,
+                notional_usdt=abs(position.qty) * exit_price,
+                pnl_usdt=pnl,
+                reason=exit_reason,
             )
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
                 snapshot.symbol,
-                "TP" if hit_tp else "SL",
+                exit_reason,
                 exit_price,
                 pnl,
             )
@@ -1592,9 +2224,15 @@ class TradingApp(QtWidgets.QMainWindow):
             position.position_idx = None
 
     def _count_open_positions(self) -> int:
-        if self.open_positions:
-            return len(self.open_positions)
-        return sum(1 for pos in self.positions.values() if pos.qty != 0)
+        open_symbols = [position.symbol for position in self.open_positions]
+        exchange_count = len(open_symbols)
+        exchange_symbol_set = set(open_symbols)
+        local_count = sum(
+            1
+            for symbol, pos in self.positions.items()
+            if pos.qty != 0 and symbol not in exchange_symbol_set
+        )
+        return exchange_count + local_count
 
     def _sync_local_positions(self) -> None:
         if not self.open_positions:
@@ -1608,7 +2246,11 @@ class TradingApp(QtWidgets.QMainWindow):
                 position.sl_price = 0.0
                 position.position_idx = None
                 self.positions[symbol] = position
-                logging.warning("Synced local position to exchange: %s cleared", symbol)
+                self._log_once(
+                    f"sync_local_position_cleared:{symbol}",
+                    f"Synced local position to exchange: {symbol} cleared",
+                    level=logging.WARNING,
+                )
 
     def _has_open_position(self, symbol: str) -> bool:
         if self.open_positions:
@@ -1624,12 +2266,31 @@ class TradingApp(QtWidgets.QMainWindow):
         price: Optional[float] = None,
         reduce_only: bool = False,
         position_idx_override: Optional[int] = None,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        set_trading_stop: bool = False,
+        force_market: bool = False,
     ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
             return
         if not self.connected or not self.client:
             logging.warning("Order skipped (not connected): %s %s %.6f", side, symbol, qty)
+            return
+        if not reduce_only and self._count_open_positions() > self.max_positions_input.value():
+            self._log_once(
+                "max_positions_exceeded",
+                "Max positions exceeded; blocking new entry order.",
+                level=logging.WARNING,
+            )
+            position = self.positions.get(symbol)
+            if position and position.qty != 0:
+                position.qty = 0
+                position.entry_price = 0.0
+                position.tp_price = 0.0
+                position.sl_price = 0.0
+                position.position_idx = None
+                self.positions[symbol] = position
             return
         reference_price = self.ticker_last_price_map.get(symbol) or price
         normalized_qty = self._normalize_qty(symbol, qty, reference_price)
@@ -1652,9 +2313,9 @@ class TradingApp(QtWidgets.QMainWindow):
             if position_idx_override is not None
             else self._resolve_position_idx(side)
         )
-        order_type = self.order_type_input.currentText()
+        order_type = "Market" if force_market else self.order_type_input.currentText()
         limit_price = None
-        if order_type == "Limit":
+        if order_type == "Limit" and not force_market:
             limit_price = self.limit_price_input.value()
             if limit_price <= 0 and price is not None:
                 limit_price = price
@@ -1687,6 +2348,9 @@ class TradingApp(QtWidgets.QMainWindow):
             order_type=order_type,
             limit_price=limit_price,
             reduce_only=reduce_only,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            set_trading_stop=set_trading_stop,
             remaining_qty=normalized_qty if order_type == "Limit" else None,
         )
         self._dispatch_order(request)
@@ -1697,6 +2361,14 @@ class TradingApp(QtWidgets.QMainWindow):
         thread = OrderThread(self.client, request)
         thread.finished.connect(self._on_order_finished)
         self.order_threads.append(thread)
+        thread.start()
+
+    def _queue_trading_stop(self, request: TradingStopRequest) -> None:
+        if not self.client:
+            return
+        thread = TradingStopThread(self.client, request)
+        thread.finished.connect(self._on_trading_stop_finished)
+        self.trading_stop_threads.append(thread)
         thread.start()
 
     def _on_order_finished(self, request: OrderRequest, response: Optional[dict], error: object) -> None:
@@ -1758,6 +2430,17 @@ class TradingApp(QtWidgets.QMainWindow):
             request.qty,
             response,
         )
+        if request.set_trading_stop and not request.reduce_only:
+            if request.tp_price is not None or request.sl_price is not None:
+                self._queue_trading_stop(
+                    TradingStopRequest(
+                        symbol=request.symbol,
+                        position_idx=request.position_idx,
+                        take_profit=request.tp_price,
+                        stop_loss=request.sl_price,
+                        source="entry",
+                    )
+                )
         if request.order_type == "Limit" and request.remaining_qty:
             filled = self._extract_filled_qty(response)
             remaining = max(request.remaining_qty - filled, 0)
@@ -1783,6 +2466,54 @@ class TradingApp(QtWidgets.QMainWindow):
                 return
         if request.order_type == "Limit":
             self.limit_shift_attempts.pop((request.symbol, request.side), None)
+
+    def _on_trading_stop_finished(
+        self,
+        request: TradingStopRequest,
+        response: Optional[dict],
+        error: object,
+    ) -> None:
+        if error:
+            logging.error(
+                "Failed to set TP/SL (%s) for %s: %s",
+                request.source,
+                request.symbol,
+                error,
+            )
+            return
+        if response is None:
+            logging.error("Failed to set TP/SL (%s) for %s: empty response.", request.source, request.symbol)
+            return
+        ret_code = response.get("retCode")
+        try:
+            ret_code = int(ret_code)
+        except (TypeError, ValueError):
+            ret_code = None
+        if ret_code == 34040:
+            self._log_once(
+                f"trading_stop_not_modified:{request.symbol}:{request.position_idx}",
+                f"TP/SL unchanged (not modified) for {request.symbol}.",
+            )
+            return
+        if ret_code != 0:
+            logging.error(
+                "TP/SL rejected (%s) for %s -> %s",
+                request.source,
+                request.symbol,
+                response,
+            )
+            return
+        cache_key = (request.symbol, request.position_idx)
+        tp_val = round(request.take_profit, 6) if request.take_profit is not None else 0.0
+        sl_val = round(request.stop_loss, 6) if request.stop_loss is not None else 0.0
+        self.trading_stop_cache[cache_key] = (tp_val, sl_val)
+        logging.info(
+            "TP/SL set (%s) for %s: TP %.6f / SL %.6f",
+            request.source,
+            request.symbol,
+            tp_val,
+            sl_val,
+        )
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
@@ -1836,10 +2567,9 @@ class TradingApp(QtWidgets.QMainWindow):
         normalized = (qty // step) * step
         normalized = round(normalized, 6)
         if normalized < min_qty:
-            normalized = min_qty
+            return None
         if price and min_notional > 0 and (normalized * price) < min_notional:
-            required = math.ceil((min_notional / price) / step) * step
-            normalized = max(normalized, required, min_qty)
+            return None
         return normalized
 
 
