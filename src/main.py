@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+import sip
 import requests
 
 
@@ -766,7 +767,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
     @staticmethod
     def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
-        if not thread:
+        if not thread or sip.isdeleted(thread):
             return
         thread.requestInterruption()
         if thread.isRunning():
@@ -774,6 +775,10 @@ class TradingApp(QtWidgets.QMainWindow):
             if not thread.wait(12_000):
                 thread.terminate()
                 thread.wait(2_000)
+
+    @staticmethod
+    def _is_thread_running(thread: Optional[QtCore.QThread]) -> bool:
+        return bool(thread) and not sip.isdeleted(thread) and thread.isRunning()
 
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
@@ -2991,11 +2996,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self._cleanup_trading_stop_threads()
 
     def _cleanup_order_threads(self) -> None:
-        self.order_threads = [thread for thread in self.order_threads if thread.isRunning()]
+        self.order_threads = [
+            thread for thread in self.order_threads if self._is_thread_running(thread)
+        ]
 
     def _cleanup_trading_stop_threads(self) -> None:
         self.trading_stop_threads = [
-            thread for thread in self.trading_stop_threads if thread.isRunning()
+            thread for thread in self.trading_stop_threads if self._is_thread_running(thread)
         ]
 
     def _is_position_mode_error(self, response: dict) -> bool:
