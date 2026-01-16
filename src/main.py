@@ -737,6 +737,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self._load_pnl_history()
         self._setup_logging()
         self._wire_signals()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._shutdown_threads)
         self._refresh_symbol_table()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
@@ -767,8 +770,12 @@ class TradingApp(QtWidgets.QMainWindow):
     @staticmethod
     def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
         if thread and thread.isRunning():
+            thread.requestInterruption()
             thread.quit()
-            thread.wait(1500)
+            if not thread.wait(3000):
+                logging.warning("Thread did not stop in time; terminating.")
+                thread.terminate()
+                thread.wait(1000)
 
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
