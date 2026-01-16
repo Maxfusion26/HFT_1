@@ -3028,12 +3028,21 @@ class TradingApp(QtWidgets.QMainWindow):
         self._cleanup_trading_stop_threads()
 
     def _cleanup_order_threads(self) -> None:
-        self.order_threads = [thread for thread in self.order_threads if thread.isRunning()]
+        self.order_threads = [
+            thread for thread in self.order_threads if self._safe_thread_is_running(thread)
+        ]
 
     def _cleanup_trading_stop_threads(self) -> None:
         self.trading_stop_threads = [
-            thread for thread in self.trading_stop_threads if thread.isRunning()
+            thread for thread in self.trading_stop_threads if self._safe_thread_is_running(thread)
         ]
+
+    @staticmethod
+    def _safe_thread_is_running(thread: QtCore.QThread) -> bool:
+        try:
+            return thread.isRunning()
+        except RuntimeError:
+            return False
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
