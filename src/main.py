@@ -19,6 +19,7 @@ import requests
 CONFIG_DIR = Path.home() / ".hft_bybit"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "trading.log"
+PNL_HISTORY_FILE = Path(__file__).resolve().parents[1] / "pnl_history.json"
 
 
 @dataclass
@@ -629,6 +630,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self._setup_ui()
         self._apply_style()
         self._load_config()
+        self._load_pnl_history()
         self._setup_logging()
         self._wire_signals()
         self._refresh_symbol_table()
@@ -1300,6 +1302,55 @@ class TradingApp(QtWidgets.QMainWindow):
         logging.log(level, message)
         self._last_log_events[key] = message
 
+    def _load_pnl_history(self) -> None:
+        if not PNL_HISTORY_FILE.exists():
+            return
+        try:
+            payload = json.loads(PNL_HISTORY_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return
+        entries = []
+        for item in payload if isinstance(payload, list) else []:
+            try:
+                timestamp = datetime.fromisoformat(item["timestamp"])
+                pnl_usdt = item.get("pnl_usdt")
+                if pnl_usdt is None:
+                    continue
+                entry = PositionHistoryEntry(
+                    timestamp=timestamp,
+                    symbol=item.get("symbol", ""),
+                    side=item.get("side", ""),
+                    action=item.get("action", "Exit"),
+                    qty=float(item.get("qty", 0) or 0),
+                    price=float(item.get("price", 0) or 0),
+                    notional_usdt=float(item.get("notional_usdt", 0) or 0),
+                    pnl_usdt=float(pnl_usdt),
+                    reason=item.get("reason", "Stored"),
+                )
+            except (TypeError, ValueError, KeyError):
+                continue
+            entries.append(entry)
+        if entries:
+            self.pnl_history = entries[:1000]
+
+    def _save_pnl_history(self) -> None:
+        payload = []
+        for entry in self.pnl_history[:1000]:
+            payload.append(
+                {
+                    "timestamp": entry.timestamp.isoformat(),
+                    "symbol": entry.symbol,
+                    "side": entry.side,
+                    "action": entry.action,
+                    "qty": entry.qty,
+                    "price": entry.price,
+                    "notional_usdt": entry.notional_usdt,
+                    "pnl_usdt": entry.pnl_usdt,
+                    "reason": entry.reason,
+                }
+            )
+        PNL_HISTORY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
     def _refresh_symbol_table(self) -> None:
         if self.client and not self.ticker_symbols:
             self._request_tickers()
@@ -1622,6 +1673,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_history.insert(0, entry)
         if entry.pnl_usdt is not None:
             self.pnl_history.insert(0, entry)
+            self._save_pnl_history()
         if len(self.position_history) > 500:
             self.position_history = self.position_history[:500]
         self._render_history_table()
@@ -1711,6 +1763,8 @@ class TradingApp(QtWidgets.QMainWindow):
             for entry in new_entries:
                 if entry.pnl_usdt is not None:
                     self.pnl_history.insert(0, entry)
+            if any(entry.pnl_usdt is not None for entry in new_entries):
+                self._save_pnl_history()
             self.position_history = self.position_history[:500]
             self._render_history_table()
             self._refresh_pnl_chart()
