@@ -5,6 +5,7 @@ import random
 import sys
 import time
 import uuid
+import faulthandler
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -32,6 +33,23 @@ def _log_uncaught_exception(
         "Uncaught exception",
         exc_info=(exc_type, exc_value, exc_traceback),
     )
+
+
+def _log_qt_message(
+    mode: QtCore.QtMsgType,
+    context: QtCore.QMessageLogContext,
+    message: str,
+) -> None:
+    categories = {
+        QtCore.QtMsgType.QtDebugMsg: logging.DEBUG,
+        QtCore.QtMsgType.QtInfoMsg: logging.INFO,
+        QtCore.QtMsgType.QtWarningMsg: logging.WARNING,
+        QtCore.QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtCore.QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }
+    level = categories.get(mode, logging.INFO)
+    location = f"{context.file}:{context.line}" if context.file else "Qt"
+    logging.log(level, "Qt: %s (%s)", message, location)
 
 
 @dataclass
@@ -686,6 +704,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.pnl_history: List[PositionHistoryEntry] = []
         self.position_history: List[PositionHistoryEntry] = []
         self.history_keys: set[str] = set()
+        self._fault_log_handle: Optional[object] = None
         self._rendering_symbol_table = False
         self._rendering_positions_table = False
         self._rendering_history_table = False
@@ -1247,6 +1266,12 @@ class TradingApp(QtWidgets.QMainWindow):
                 QtLogHandler(self.log_output),
             ],
         )
+        QtCore.qInstallMessageHandler(_log_qt_message)
+        try:
+            self._fault_log_handle = ROOT_LOG_FILE.open("a", encoding="utf-8")
+            faulthandler.enable(file=self._fault_log_handle)
+        except OSError:
+            logging.exception("Failed to enable faulthandler")
         logging.info("Application started")
 
     def _wire_signals(self) -> None:
