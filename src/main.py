@@ -1604,6 +1604,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.ticker_thread = TickerThread(self.client)
         self.ticker_thread.finished.connect(self._on_tickers_ready)
+        self.ticker_thread.finished.connect(self.ticker_thread.deleteLater)
         self.ticker_thread.start()
 
     def _request_instruments(self) -> None:
@@ -1611,6 +1612,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.instrument_thread = InstrumentThread(self.client)
         self.instrument_thread.finished.connect(self._on_instruments_ready)
+        self.instrument_thread.finished.connect(self.instrument_thread.deleteLater)
         self.instrument_thread.start()
 
     def _request_portfolio(self) -> None:
@@ -1618,6 +1620,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.portfolio_thread = PortfolioThread(self.client)
         self.portfolio_thread.finished.connect(self._on_portfolio_ready)
+        self.portfolio_thread.finished.connect(self.portfolio_thread.deleteLater)
         self.portfolio_thread.start()
 
     def _request_history(self) -> None:
@@ -1625,6 +1628,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.history_thread = HistoryThread(self.client)
         self.history_thread.finished.connect(self._on_history_ready)
+        self.history_thread.finished.connect(self.history_thread.deleteLater)
         self.history_thread.start()
 
     def _update_time_status(self) -> None:
@@ -1657,6 +1661,7 @@ class TradingApp(QtWidgets.QMainWindow):
         if specs:
             self.symbol_specs.update(specs)
             self.instrument_specs_ready = True
+        self.instrument_thread = None
 
     def _on_tickers_ready(
         self,
@@ -1678,21 +1683,24 @@ class TradingApp(QtWidgets.QMainWindow):
             self.auto_select_interval.value() if self.auto_select_checkbox.isChecked() else 5
         )
         if not self.symbol_metrics or (now - self._last_symbol_refresh) >= refresh_interval:
-            self._refresh_symbol_table()
+            QtCore.QTimer.singleShot(0, self._refresh_symbol_table)
         if self.open_positions:
-            self._render_portfolio_table()
+            QtCore.QTimer.singleShot(0, self._render_portfolio_table)
+        self.ticker_thread = None
 
     def _on_portfolio_ready(self, positions: list, balance: dict, error: object) -> None:
         if error:
             logging.error("Failed to fetch portfolio: %s", error)
             return
-        self._update_portfolio(balance, positions)
+        QtCore.QTimer.singleShot(0, lambda: self._update_portfolio(balance, positions))
+        self.portfolio_thread = None
 
     def _on_history_ready(self, history: list, error: object) -> None:
         if error:
             logging.error("Failed to fetch position history: %s", error)
             return
-        self._update_history_from_api(history)
+        QtCore.QTimer.singleShot(0, lambda: self._update_history_from_api(history))
+        self.history_thread = None
 
     def _update_portfolio(self, balance: dict, positions: list) -> None:
         self.open_positions = []
@@ -2667,6 +2675,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         thread = OrderThread(self.client, request)
         thread.finished.connect(self._on_order_finished)
+        thread.finished.connect(thread.deleteLater)
         self.order_threads.append(thread)
         thread.start()
 
@@ -2675,15 +2684,18 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         thread = TradingStopThread(self.client, request)
         thread.finished.connect(self._on_trading_stop_finished)
+        thread.finished.connect(thread.deleteLater)
         self.trading_stop_threads.append(thread)
         thread.start()
 
     def _on_order_finished(self, request: OrderRequest, response: Optional[dict], error: object) -> None:
         if error:
             logging.error("Order failed: %s", error)
+            self._cleanup_order_threads()
             return
         if response is None:
             logging.error("Order failed: empty response.")
+            self._cleanup_order_threads()
             return
         if self._is_position_mode_error(response) and request.retry == 0:
             fallback_idx = 0 if request.position_idx in (1, 2) else (1 if request.side == "Buy" else 2)
@@ -2730,6 +2742,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 response,
             )
             return
+        self._cleanup_order_threads()
         logging.info(
             "Order sent: %s %s %.6f -> %s",
             request.side,
@@ -2787,9 +2800,11 @@ class TradingApp(QtWidgets.QMainWindow):
                 request.symbol,
                 error,
             )
+            self._cleanup_trading_stop_threads()
             return
         if response is None:
             logging.error("Failed to set TP/SL (%s) for %s: empty response.", request.source, request.symbol)
+            self._cleanup_trading_stop_threads()
             return
         ret_code = response.get("retCode")
         try:
@@ -2809,6 +2824,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 request.symbol,
                 response,
             )
+            self._cleanup_trading_stop_threads()
             return
         cache_key = (request.symbol, request.position_idx)
         tp_val = round(request.take_profit, 6) if request.take_profit is not None else 0.0
@@ -2821,6 +2837,15 @@ class TradingApp(QtWidgets.QMainWindow):
             tp_val,
             sl_val,
         )
+        self._cleanup_trading_stop_threads()
+
+    def _cleanup_order_threads(self) -> None:
+        self.order_threads = [thread for thread in self.order_threads if thread.isRunning()]
+
+    def _cleanup_trading_stop_threads(self) -> None:
+        self.trading_stop_threads = [
+            thread for thread in self.trading_stop_threads if thread.isRunning()
+        ]
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
