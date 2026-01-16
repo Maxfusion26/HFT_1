@@ -2351,6 +2351,10 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.error("Failed to set TP/SL (%s) for %s: empty response.", request.source, request.symbol)
             return
         ret_code = response.get("retCode")
+        try:
+            ret_code = int(ret_code)
+        except (TypeError, ValueError):
+            ret_code = None
         if ret_code == 34040:
             self._log_once(
                 f"trading_stop_not_modified:{request.symbol}:{request.position_idx}",
