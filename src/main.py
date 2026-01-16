@@ -1342,6 +1342,32 @@ class TradingApp(QtWidgets.QMainWindow):
             sl_price = max(sl_price, base_sl) if direction > 0 else min(sl_price, base_sl)
         return tp_price, sl_price
 
+    def _evaluate_tp_sl(
+        self,
+        entry_price: float,
+        last_price: float,
+        side: str,
+        base_tp: Optional[float] = None,
+        base_sl: Optional[float] = None,
+    ) -> tuple[float, float, bool, bool]:
+        tp_pct = self.tp_input.value() / 100
+        sl_pct = self.sl_input.value() / 100
+        tp_price, sl_price = self._get_tp_sl_prices(
+            entry_price,
+            last_price,
+            side,
+            base_tp=base_tp,
+            base_sl=base_sl,
+        )
+        direction = 1 if side.lower() == "buy" else -1
+        hit_tp = False
+        hit_sl = False
+        if tp_pct > 0:
+            hit_tp = last_price >= tp_price if direction > 0 else last_price <= tp_price
+        if sl_pct > 0:
+            hit_sl = last_price <= sl_price if direction > 0 else last_price >= sl_price
+        return tp_price, sl_price, hit_tp, hit_sl
+
     def _monitor_positions_for_exit(self) -> None:
         if not self.auto_trading_toggle.isChecked():
             return
@@ -1349,14 +1375,12 @@ class TradingApp(QtWidgets.QMainWindow):
             last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
             if not last_price or position.entry_price <= 0:
                 continue
-            tp_price, sl_price = self._get_tp_sl_prices(
+            direction = 1 if position.side.lower() == "buy" else -1
+            tp_price, sl_price, hit_tp, hit_sl = self._evaluate_tp_sl(
                 position.entry_price,
                 last_price,
                 position.side,
             )
-            direction = 1 if position.side.lower() == "buy" else -1
-            hit_tp = last_price >= tp_price if direction > 0 else last_price <= tp_price
-            hit_sl = last_price <= sl_price if direction > 0 else last_price >= sl_price
             if hit_tp or hit_sl:
                 close_side = "Sell" if direction > 0 else "Buy"
                 position_idx = (
@@ -1528,7 +1552,7 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.warning("Local position cleared (not on exchange): %s", snapshot.symbol)
             return
         direction = 1 if position.qty > 0 else -1
-        tp_price, sl_price = self._get_tp_sl_prices(
+        tp_price, sl_price, hit_tp, hit_sl = self._evaluate_tp_sl(
             position.entry_price,
             snapshot.mid,
             "Buy" if direction > 0 else "Sell",
@@ -1537,8 +1561,6 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         position.tp_price = tp_price
         position.sl_price = sl_price
-        hit_tp = snapshot.mid >= position.tp_price if direction > 0 else snapshot.mid <= position.tp_price
-        hit_sl = snapshot.mid <= position.sl_price if direction > 0 else snapshot.mid >= position.sl_price
         if hit_tp or hit_sl:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
