@@ -1429,6 +1429,8 @@ class TradingApp(QtWidgets.QMainWindow):
         for item in payload if isinstance(payload, list) else []:
             try:
                 timestamp = datetime.fromisoformat(item["timestamp"])
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
                 pnl_usdt = item.get("pnl_usdt")
                 if pnl_usdt is None:
                     continue
@@ -2028,6 +2030,10 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         start_dt = self.pnl_start_input.dateTime().toPyDateTime()
         end_dt = self.pnl_end_input.dateTime().toPyDateTime()
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
         if end_dt < start_dt:
             start_dt, end_dt = end_dt, start_dt
         entries = [
