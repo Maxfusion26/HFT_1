@@ -686,6 +686,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.limit_shift_attempts: Dict[tuple, int] = {}
         self.order_threads: List[OrderThread] = []
         self.trading_stop_threads: List[TradingStopThread] = []
+        self._active_threads: set[QtCore.QThread] = set()
         self.ticker_thread: Optional[TickerThread] = None
         self.instrument_thread: Optional[InstrumentThread] = None
         self.instrument_specs_ready = False
@@ -708,6 +709,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self._rendering_symbol_table = False
         self._rendering_positions_table = False
         self._rendering_history_table = False
+        self._shutting_down = False
+        self._thread_shutdown_timeout_ms = 12_000
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
@@ -740,7 +743,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self._refresh_symbol_table()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._shutting_down = True
         self._shutdown_threads()
+        self._teardown_logging()
         super().closeEvent(event)
 
     def _shutdown_threads(self) -> None:
@@ -749,13 +754,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.time_status_timer.stop()
         self.history_timer.stop()
         self.trading_timer.stop()
-        self._stop_thread(self.ticker_thread)
-        self._stop_thread(self.instrument_thread)
-        self._stop_thread(self.portfolio_thread)
-        self._stop_thread(self.history_thread)
-        for thread in list(self.order_threads):
-            self._stop_thread(thread)
-        for thread in list(self.trading_stop_threads):
+        for thread in list(self._active_threads):
             self._stop_thread(thread)
         self.order_threads.clear()
         self.trading_stop_threads.clear()
@@ -764,11 +763,39 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_thread = None
         self.history_thread = None
 
-    @staticmethod
-    def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
-        if thread and thread.isRunning():
-            thread.quit()
-            thread.wait(1500)
+    def _stop_thread(self, thread: Optional[QtCore.QThread]) -> None:
+        if not thread:
+            return
+        if not thread.isRunning():
+            self._active_threads.discard(thread)
+            return
+        thread.requestInterruption()
+        thread.quit()
+        if not thread.wait(self._thread_shutdown_timeout_ms):
+            logging.warning(
+                "Thread %s did not stop in time; terminating.", thread.objectName() or thread
+            )
+            thread.terminate()
+            thread.wait(2000)
+        self._active_threads.discard(thread)
+
+    def _register_thread(self, thread: QtCore.QThread, name: str) -> None:
+        thread.setObjectName(name)
+        self._active_threads.add(thread)
+        thread.finished.connect(lambda: self._active_threads.discard(thread))
+        thread.finished.connect(thread.deleteLater)
+
+    def _teardown_logging(self) -> None:
+        try:
+            faulthandler.disable()
+        except Exception:  # noqa: BLE001
+            logging.exception("Failed to disable faulthandler")
+        if self._fault_log_handle:
+            try:
+                self._fault_log_handle.close()
+            except OSError:
+                logging.exception("Failed to close fault log handle")
+            self._fault_log_handle = None
 
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
@@ -1685,35 +1712,43 @@ class TradingApp(QtWidgets.QMainWindow):
         return fallback, {}
 
     def _request_tickers(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.ticker_thread and self.ticker_thread.isRunning()):
             return
         self.ticker_thread = TickerThread(self.client)
         self.ticker_thread.finished.connect(self._on_tickers_ready)
-        self.ticker_thread.finished.connect(self.ticker_thread.deleteLater)
+        self._register_thread(self.ticker_thread, "TickerThread")
         self.ticker_thread.start()
 
     def _request_instruments(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.instrument_thread and self.instrument_thread.isRunning()):
             return
         self.instrument_thread = InstrumentThread(self.client)
         self.instrument_thread.finished.connect(self._on_instruments_ready)
-        self.instrument_thread.finished.connect(self.instrument_thread.deleteLater)
+        self._register_thread(self.instrument_thread, "InstrumentThread")
         self.instrument_thread.start()
 
     def _request_portfolio(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.portfolio_thread and self.portfolio_thread.isRunning()):
             return
         self.portfolio_thread = PortfolioThread(self.client)
         self.portfolio_thread.finished.connect(self._on_portfolio_ready)
-        self.portfolio_thread.finished.connect(self.portfolio_thread.deleteLater)
+        self._register_thread(self.portfolio_thread, "PortfolioThread")
         self.portfolio_thread.start()
 
     def _request_history(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.history_thread and self.history_thread.isRunning()):
             return
         self.history_thread = HistoryThread(self.client)
         self.history_thread.finished.connect(self._on_history_ready)
-        self.history_thread.finished.connect(self.history_thread.deleteLater)
+        self._register_thread(self.history_thread, "HistoryThread")
         self.history_thread.start()
 
     def _update_time_status(self) -> None:
@@ -2796,20 +2831,20 @@ class TradingApp(QtWidgets.QMainWindow):
         self._dispatch_order(request)
 
     def _dispatch_order(self, request: OrderRequest) -> None:
-        if not self.client:
+        if not self.client or self._shutting_down:
             return
         thread = OrderThread(self.client, request)
         thread.finished.connect(self._on_order_finished)
-        thread.finished.connect(thread.deleteLater)
+        self._register_thread(thread, "OrderThread")
         self.order_threads.append(thread)
         thread.start()
 
     def _queue_trading_stop(self, request: TradingStopRequest) -> None:
-        if not self.client:
+        if not self.client or self._shutting_down:
             return
         thread = TradingStopThread(self.client, request)
         thread.finished.connect(self._on_trading_stop_finished)
-        thread.finished.connect(thread.deleteLater)
+        self._register_thread(thread, "TradingStopThread")
         self.trading_stop_threads.append(thread)
         thread.start()
 
