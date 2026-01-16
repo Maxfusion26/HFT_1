@@ -1830,6 +1830,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     price=last_price,
                     reduce_only=True,
                     position_idx_override=position_idx,
+                    force_market=True,
                 )
                 exit_pnl = (last_price - position.entry_price) * position.size * direction
                 self._add_history_entry(
@@ -1969,6 +1970,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 tp_price=position.tp_price,
                 sl_price=position.sl_price,
                 set_trading_stop=True,
+                force_market=True,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -2053,6 +2055,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 price=exit_price,
                 reduce_only=True,
                 position_idx_override=position_idx,
+                force_market=True,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -2113,6 +2116,7 @@ class TradingApp(QtWidgets.QMainWindow):
         tp_price: Optional[float] = None,
         sl_price: Optional[float] = None,
         set_trading_stop: bool = False,
+        force_market: bool = False,
     ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
@@ -2141,9 +2145,9 @@ class TradingApp(QtWidgets.QMainWindow):
             if position_idx_override is not None
             else self._resolve_position_idx(side)
         )
-        order_type = self.order_type_input.currentText()
+        order_type = "Market" if force_market else self.order_type_input.currentText()
         limit_price = None
-        if order_type == "Limit":
+        if order_type == "Limit" and not force_market:
             limit_price = self.limit_price_input.value()
             if limit_price <= 0 and price is not None:
                 limit_price = price
