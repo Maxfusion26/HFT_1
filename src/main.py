@@ -766,9 +766,14 @@ class TradingApp(QtWidgets.QMainWindow):
 
     @staticmethod
     def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
-        if thread and thread.isRunning():
+        if not thread:
+            return
+        thread.requestInterruption()
+        if thread.isRunning():
             thread.quit()
-            thread.wait(1500)
+            if not thread.wait(12_000):
+                thread.terminate()
+                thread.wait(2_000)
 
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
