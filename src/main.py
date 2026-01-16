@@ -1337,9 +1337,10 @@ class TradingApp(QtWidgets.QMainWindow):
         if entry_price > 0:
             profit_pct = (last_price - entry_price) / entry_price * direction
         trailing_enabled = self.trailing_tp_sl_checkbox.isChecked() and profit_pct >= trigger_pct
-        base_price = last_price if trailing_enabled else entry_price
-        tp_price = base_price * (1 + (tp_pct * direction))
-        sl_price = base_price * (1 - (sl_pct * direction))
+        tp_base_price = entry_price
+        sl_base_price = last_price if trailing_enabled else entry_price
+        tp_price = tp_base_price * (1 + (tp_pct * direction))
+        sl_price = sl_base_price * (1 - (sl_pct * direction))
         if base_tp is not None:
             tp_price = max(tp_price, base_tp) if direction > 0 else min(tp_price, base_tp)
         if base_sl is not None:
