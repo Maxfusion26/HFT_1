@@ -603,6 +603,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.open_positions: List[PositionSnapshot] = []
         self.portfolio_ready = False
         self.trading_stop_cache: Dict[tuple, tuple[float, float]] = {}
+        self._last_log_events: Dict[str, str] = {}
         self.position_history: List[PositionHistoryEntry] = []
         self.history_keys: set[str] = set()
         self.portfolio_timer = QtCore.QTimer(self)
@@ -1262,6 +1263,12 @@ class TradingApp(QtWidgets.QMainWindow):
         logging.info(
             "Strategy: hybrid market making + momentum with inventory skew and fee-aware thresholds."
         )
+
+    def _log_once(self, key: str, message: str, level: int = logging.INFO) -> None:
+        if self._last_log_events.get(key) == message:
+            return
+        logging.log(level, message)
+        self._last_log_events[key] = message
 
     def _refresh_symbol_table(self) -> None:
         if self.client and not self.ticker_symbols:
@@ -1927,29 +1934,43 @@ class TradingApp(QtWidgets.QMainWindow):
 
         if abs(momentum) > required_edge:
             if self.connected and not self.portfolio_ready:
-                logging.info("Portfolio not synced yet; skipping new entry.")
+                self._log_once(
+                    "portfolio_not_synced",
+                    "Portfolio not synced yet; skipping new entry.",
+                )
                 return
             if self._count_open_positions() >= self.max_positions_input.value():
-                logging.info("Max positions reached; skipping new entry.")
+                self._log_once(
+                    "max_positions_reached",
+                    "Max positions reached; skipping new entry.",
+                )
                 return
             if not self.instrument_specs_ready:
-                logging.warning("Instrument specs not loaded; skipping entry sizing.")
+                self._log_once(
+                    "instrument_specs_missing",
+                    "Instrument specs not loaded; skipping entry sizing.",
+                    level=logging.WARNING,
+                )
                 return
             direction = 1 if momentum > 0 else -1
             entry = snapshot.ask if direction > 0 else snapshot.bid
             desired_usdt = self.position_size_input.value()
             reference_price = self.ticker_last_price_map.get(snapshot.symbol)
             if not reference_price:
-                logging.warning("No live price for %s; skipping entry sizing.", snapshot.symbol)
+                self._log_once(
+                    f"missing_live_price:{snapshot.symbol}",
+                    f"No live price for {snapshot.symbol}; skipping entry sizing.",
+                    level=logging.WARNING,
+                )
                 return
             raw_qty = desired_usdt / reference_price
             normalized_qty = self._normalize_qty(snapshot.symbol, raw_qty, reference_price)
             if normalized_qty is None:
-                logging.error(
-                    "Order rejected locally: %s %s %.2f USDT (min notional/min qty)",
-                    "Buy" if direction > 0 else "Sell",
-                    snapshot.symbol,
-                    desired_usdt,
+                self._log_once(
+                    f"order_rejected_min_notional:{snapshot.symbol}",
+                    "Order rejected locally: %s %s %.2f USDT (min notional/min qty)"
+                    % ("Buy" if direction > 0 else "Sell", snapshot.symbol, desired_usdt),
+                    level=logging.ERROR,
                 )
                 return
             position.qty = direction * normalized_qty
@@ -2020,7 +2041,11 @@ class TradingApp(QtWidgets.QMainWindow):
             position.sl_price = 0.0
             position.position_idx = None
             self.positions[snapshot.symbol] = position
-            logging.warning("Local position cleared (not on exchange): %s", snapshot.symbol)
+            self._log_once(
+                f"local_position_cleared:{snapshot.symbol}",
+                f"Local position cleared (not on exchange): {snapshot.symbol}",
+                level=logging.WARNING,
+            )
             return
         direction = 1 if position.qty > 0 else -1
         tp_price, sl_price, hit_tp, hit_sl = self._evaluate_tp_sl(
@@ -2097,7 +2122,11 @@ class TradingApp(QtWidgets.QMainWindow):
                 position.sl_price = 0.0
                 position.position_idx = None
                 self.positions[symbol] = position
-                logging.warning("Synced local position to exchange: %s cleared", symbol)
+                self._log_once(
+                    f"sync_local_position_cleared:{symbol}",
+                    f"Synced local position to exchange: {symbol} cleared",
+                    level=logging.WARNING,
+                )
 
     def _has_open_position(self, symbol: str) -> bool:
         if self.open_positions:
