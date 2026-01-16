@@ -12,7 +12,7 @@ import hmac
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6 import QtCharts, QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 import requests
 
 
@@ -547,6 +547,64 @@ class EntrySignal:
     reason: str
 
 
+class PnlChartWidget(QtWidgets.QWidget):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self._pnl_values: List[float] = []
+        self._dd_values: List[float] = []
+        self._title = "PnL: нет данных"
+
+    def set_data(self, pnl_values: List[float], dd_values: List[float], title: str) -> None:
+        self._pnl_values = pnl_values
+        self._dd_values = dd_values
+        self._title = title
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(12, 12, -12, -12)
+        painter.fillRect(rect, QtGui.QColor("#0b1220"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#1f2937")))
+        painter.drawRect(rect)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
+        painter.drawText(rect.adjusted(8, 6, -8, -6), self._title)
+
+        if not self._pnl_values:
+            return
+
+        chart_rect = rect.adjusted(16, 28, -16, -24)
+        min_y = min(min(self._dd_values), 0.0)
+        max_y = max(self._pnl_values)
+        if math.isclose(min_y, max_y):
+            max_y = min_y + 1.0
+        span_y = max_y - min_y
+        span_x = max(len(self._pnl_values) - 1, 1)
+
+        def _map_point(index: int, value: float) -> QtCore.QPointF:
+            x = chart_rect.left() + (index / span_x) * chart_rect.width()
+            y = chart_rect.bottom() - ((value - min_y) / span_y) * chart_rect.height()
+            return QtCore.QPointF(x, y)
+
+        painter.setPen(QtGui.QPen(QtGui.QColor("#1d4ed8"), 2))
+        pnl_path = QtGui.QPainterPath()
+        pnl_path.moveTo(_map_point(0, self._pnl_values[0]))
+        for idx, value in enumerate(self._pnl_values[1:], start=1):
+            pnl_path.lineTo(_map_point(idx, value))
+        painter.drawPath(pnl_path)
+
+        painter.setPen(QtGui.QPen(QtGui.QColor("#f59e0b"), 2))
+        dd_path = QtGui.QPainterPath()
+        dd_path.moveTo(_map_point(0, self._dd_values[0]))
+        for idx, value in enumerate(self._dd_values[1:], start=1):
+            dd_path.lineTo(_map_point(idx, value))
+        painter.drawPath(dd_path)
+
+        painter.setPen(QtGui.QPen(QtGui.QColor("#64748b")))
+        painter.drawText(chart_rect.left(), chart_rect.top() - 6, f"{max_y:,.2f}")
+        painter.drawText(chart_rect.left(), chart_rect.bottom() + 16, f"{min_y:,.2f}")
+
+
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -1042,16 +1100,12 @@ class TradingApp(QtWidgets.QMainWindow):
         self.pnl_start_input.setDateTime(QtCore.QDateTime(now - timedelta(days=7)))
         self.pnl_end_input.setDateTime(QtCore.QDateTime(now))
 
-        self.pnl_chart = QtCharts.QChart()
-        self.pnl_chart.legend().setVisible(True)
-        self.pnl_chart.legend().setAlignment(QtCore.Qt.AlignmentFlag.AlignBottom)
-        self.pnl_chart_view = QtCharts.QChartView(self.pnl_chart)
-        self.pnl_chart_view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        self.pnl_chart = PnlChartWidget()
         layout.addWidget(self.pnl_label)
         layout.addWidget(self.pnl_summary_label)
         layout.addLayout(header_row)
         layout.addLayout(filter_row)
-        layout.addWidget(self.pnl_chart_view)
+        layout.addWidget(self.pnl_chart)
 
     def _build_portfolio_section(self) -> QtWidgets.QWidget:
         section = QtWidgets.QWidget()
@@ -1895,7 +1949,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
 
     def _refresh_pnl_chart(self) -> None:
-        if not hasattr(self, "pnl_chart") or not hasattr(self, "pnl_chart_view"):
+        if not hasattr(self, "pnl_chart"):
             return
         if not hasattr(self, "pnl_start_input") or not hasattr(self, "pnl_end_input"):
             return
@@ -1908,17 +1962,11 @@ class TradingApp(QtWidgets.QMainWindow):
             for entry in self.pnl_history
             if entry.pnl_usdt is not None and start_dt <= entry.timestamp <= end_dt
         ]
-        self.pnl_chart.removeAllSeries()
         if not entries:
-            self.pnl_chart.setTitle("PnL: нет данных за выбранный период")
-            self.pnl_chart_view.repaint()
+            self.pnl_chart.set_data([], [], "PnL: нет данных за выбранный период")
             self.pnl_summary_label.setText("Summary: --")
             return
         entries.sort(key=lambda item: item.timestamp)
-        pnl_series = QtCharts.QLineSeries()
-        pnl_series.setName("Cumulative PnL")
-        dd_series = QtCharts.QLineSeries()
-        dd_series.setName("Drawdown")
         running_total = 0.0
         peak = 0.0
         wins = 0
@@ -1938,26 +1986,11 @@ class TradingApp(QtWidgets.QMainWindow):
             drawdown = running_total - peak
             pnl_values.append(running_total)
             dd_values.append(drawdown)
-            pnl_series.append(idx, running_total)
-            dd_series.append(idx, drawdown)
-        self.pnl_chart.addSeries(pnl_series)
-        self.pnl_chart.addSeries(dd_series)
-        axis_x = QtCharts.QValueAxis()
-        axis_x.setTitleText("Trades")
-        axis_x.setLabelFormat("%d")
-        axis_x.setRange(0, max(len(entries) - 1, 1))
-        axis_y = QtCharts.QValueAxis()
-        axis_y.setTitleText("USDT")
-        min_y = min(0.0, min(dd_values))
-        max_y = max(pnl_values)
-        padding = max((max_y - min_y) * 0.1, 1.0)
-        axis_y.setRange(min_y - padding, max_y + padding)
-        self.pnl_chart.addAxis(axis_x, QtCore.Qt.AlignmentFlag.AlignBottom)
-        self.pnl_chart.addAxis(axis_y, QtCore.Qt.AlignmentFlag.AlignLeft)
-        pnl_series.attachAxis(axis_x)
-        pnl_series.attachAxis(axis_y)
-        dd_series.attachAxis(axis_x)
-        dd_series.attachAxis(axis_y)
+        self.pnl_chart.set_data(
+            pnl_values,
+            dd_values,
+            "PnL: cumulative / drawdown",
+        )
         win_rate = (wins / max(wins + losses, 1)) * 100
         avg_pnl = total_pnl / max(len(entries), 1)
         self.pnl_summary_label.setText(
