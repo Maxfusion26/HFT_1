@@ -720,13 +720,16 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_history: List[PositionHistoryEntry] = []
         self.history_keys: set[str] = set()
         self.portfolio_timer = QtCore.QTimer(self)
-        self.portfolio_timer.setInterval(2000)
+        self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
-        self.history_timer.setInterval(10_000)
+        self.history_timer.setInterval(5_000)
         self.ticker_timer = QtCore.QTimer(self)
-        self.ticker_timer.setInterval(2000)
+        self.ticker_timer.setInterval(1000)
         self.time_status_timer = QtCore.QTimer(self)
-        self.time_status_timer.setInterval(2000)
+        self.time_status_timer.setInterval(1000)
+        self.ticker_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+        self.portfolio_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+        self.time_status_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self.symbol_specs = {
             "BTCUSDT": {"min_qty": 0.001, "step": 0.001, "min_notional": 5.0},
             "ETHUSDT": {"min_qty": 0.01, "step": 0.01, "min_notional": 5.0},
@@ -736,8 +739,9 @@ class TradingApp(QtWidgets.QMainWindow):
         }
         self.positions: Dict[str, PositionState] = {}
         self.symbol_metrics: List[SymbolMetrics] = []
+        self._last_symbol_refresh = 0.0
         self.trading_timer = QtCore.QTimer(self)
-        self.trading_timer.setInterval(1500)
+        self.trading_timer.setInterval(1000)
         self._setup_ui()
         self._apply_style()
         self._load_config()
@@ -1476,6 +1480,7 @@ class TradingApp(QtWidgets.QMainWindow):
             self._request_tickers()
         self.symbol_metrics = self._generate_symbol_metrics()
         self.symbol_metrics.sort(key=lambda item: item.change_24h, reverse=True)
+        self._last_symbol_refresh = time.time()
 
         self.symbol_table.setRowCount(len(self.symbol_metrics))
         for row, metric in enumerate(self.symbol_metrics):
@@ -1693,7 +1698,12 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
         self.ticker_detail_map = details_map
-        self._refresh_symbol_table()
+        now = time.time()
+        refresh_interval = (
+            self.auto_select_interval.value() if self.auto_select_checkbox.isChecked() else 5
+        )
+        if not self.symbol_metrics or (now - self._last_symbol_refresh) >= refresh_interval:
+            self._refresh_symbol_table()
         if self.open_positions:
             self._render_portfolio_table()
 
