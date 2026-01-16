@@ -13,7 +13,7 @@ import hmac
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 import requests
 
 
