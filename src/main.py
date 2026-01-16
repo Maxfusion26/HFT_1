@@ -1368,6 +1368,16 @@ class TradingApp(QtWidgets.QMainWindow):
             hit_sl = last_price <= sl_price if direction > 0 else last_price >= sl_price
         return tp_price, sl_price, hit_tp, hit_sl
 
+    def _resolve_exit_reason(self, hit_tp: bool, hit_sl: bool) -> Optional[str]:
+        if hit_tp and hit_sl:
+            logging.warning("TP and SL both triggered; skipping exit to enforce strict rules.")
+            return None
+        if hit_tp:
+            return "TP"
+        if hit_sl:
+            return "SL"
+        return None
+
     def _monitor_positions_for_exit(self) -> None:
         if not self.auto_trading_toggle.isChecked():
             return
@@ -1381,7 +1391,8 @@ class TradingApp(QtWidgets.QMainWindow):
                 last_price,
                 position.side,
             )
-            if hit_tp or hit_sl:
+            exit_reason = self._resolve_exit_reason(hit_tp, hit_sl)
+            if exit_reason:
                 close_side = "Sell" if direction > 0 else "Buy"
                 position_idx = (
                     position.position_idx
@@ -1395,6 +1406,14 @@ class TradingApp(QtWidgets.QMainWindow):
                     price=last_price,
                     reduce_only=True,
                     position_idx_override=position_idx,
+                )
+                logging.info(
+                    "%s exit %s @ %.2f (TP %.2f / SL %.2f)",
+                    position.symbol,
+                    exit_reason,
+                    last_price,
+                    tp_price,
+                    sl_price,
                 )
 
     def _run_backtest(self) -> None:
@@ -1561,7 +1580,8 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         position.tp_price = tp_price
         position.sl_price = sl_price
-        if hit_tp or hit_sl:
+        exit_reason = self._resolve_exit_reason(hit_tp, hit_sl)
+        if exit_reason:
             exit_price = snapshot.bid if direction > 0 else snapshot.ask
             pnl = (exit_price - position.entry_price) * position.qty
             position_side = "Buy" if direction > 0 else "Sell"
@@ -1581,7 +1601,7 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.info(
                 "%s exit %s @ %.2f P&L %.2f",
                 snapshot.symbol,
-                "TP" if hit_tp else "SL",
+                exit_reason,
                 exit_price,
                 pnl,
             )
