@@ -453,6 +453,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.selected_symbols: List[str] = []
         self._updating_symbol_list = False
         self.open_positions: List[PositionSnapshot] = []
+        self.portfolio_ready = False
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(2000)
         self.symbol_specs = {
@@ -997,6 +998,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.client = BybitRestClient(api_key, api_secret, base_url)
         self.connected = True
+        self.portfolio_ready = False
         self.position_mode_detected = self._detect_position_mode()
         self._request_tickers()
         self._request_instruments()
@@ -1015,6 +1017,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_last_price_map = {}
         self.instrument_specs_ready = False
         self.open_positions = []
+        self.portfolio_ready = False
         self.portfolio_timer.stop()
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
@@ -1198,6 +1201,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 continue
             self.open_positions.append(snapshot)
             total_unrealized += snapshot.unrealized_pnl
+        self.portfolio_ready = True
 
         self._render_portfolio_table()
         self._render_balance_summary(balance, total_unrealized)
@@ -1512,6 +1516,9 @@ class TradingApp(QtWidgets.QMainWindow):
             return
 
         if abs(momentum) > required_edge:
+            if self.connected and not self.portfolio_ready:
+                logging.info("Portfolio not synced yet; skipping new entry.")
+                return
             if self._count_open_positions() >= self.max_positions_input.value():
                 logging.info("Max positions reached; skipping new entry.")
                 return
@@ -1640,9 +1647,9 @@ class TradingApp(QtWidgets.QMainWindow):
             position.position_idx = None
 
     def _count_open_positions(self) -> int:
-        if self.open_positions:
-            return len(self.open_positions)
-        return sum(1 for pos in self.positions.values() if pos.qty != 0)
+        open_symbols = {position.symbol for position in self.open_positions}
+        local_symbols = {symbol for symbol, pos in self.positions.items() if pos.qty != 0}
+        return len(open_symbols | local_symbols)
 
     def _sync_local_positions(self) -> None:
         if not self.open_positions:
