@@ -572,6 +572,7 @@ class EntrySignal:
     momentum: float
     imbalance: float
     micro_edge: float
+    local_extreme: float
     volatility_pct: float
     spread_pct: float
     reason: str
@@ -2589,6 +2590,7 @@ class TradingApp(QtWidgets.QMainWindow):
             (last_price - range_mid) / (range_span / 2) if range_span > 0 else 0.0
         )
         range_pct = range_span / last_price if last_price else 0.0
+        local_extreme = 1 - min(abs(range_pos), 1.0)
         imbalance = snapshot.imbalance
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
@@ -2596,6 +2598,7 @@ class TradingApp(QtWidgets.QMainWindow):
         micro_bias = micro_edge * 0.2
         momentum = change_24h * 0.45
         range_bias = range_pos * 0.2
+        local_extreme_bias = local_extreme * (0.25 if range_pos < 0 else -0.25)
         volatility_pct = snapshot.volatility
         if range_pct <= 0.003 or volatility_pct < 0.9:
             return None
@@ -2604,15 +2607,21 @@ class TradingApp(QtWidgets.QMainWindow):
             return None
         regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
         if regime_trend:
-            score = momentum + order_flow + micro_bias + range_bias
+            score = momentum + order_flow + micro_bias + range_bias + local_extreme_bias
         else:
-            score = (-range_bias * 0.7) + (order_flow * 0.3) + (micro_bias * 0.3) + (momentum * 0.2)
+            score = (
+                (-range_bias * 0.7)
+                + (order_flow * 0.3)
+                + (micro_bias * 0.3)
+                + (momentum * 0.2)
+                + (local_extreme_bias * 0.5)
+            )
         direction = 1 if score >= 0 else -1
         if micro_edge * direction <= 0:
             return None
         confirmations = sum(
             1
-            for signal in (momentum, order_flow, micro_bias, range_bias)
+            for signal in (momentum, order_flow, micro_bias, range_bias, local_extreme_bias)
             if signal * direction > 0.00004
         )
         flow_strength = abs(imbalance) * (1 - min(spread_pct * 50, 0.5))
@@ -2621,6 +2630,8 @@ class TradingApp(QtWidgets.QMainWindow):
         if flow_strength < 0.1 and trend_strength < 0.006:
             return None
         if confirmations < 4 or range_strength < 0.15:
+            return None
+        if local_extreme < 0.35:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
@@ -2653,6 +2664,7 @@ class TradingApp(QtWidgets.QMainWindow):
             momentum=momentum,
             imbalance=imbalance,
             micro_edge=micro_edge,
+            local_extreme=local_extreme,
             volatility_pct=volatility_pct,
             spread_pct=spread_pct,
             reason=reason,
