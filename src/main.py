@@ -719,9 +719,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self._thread_shutdown_timeout_ms = 12_000
         self._signal_history: Dict[str, List[EntrySignal]] = {}
         self._signal_history_depth = 6
-        self._min_signal_confirmations = 3
-        self._signal_cooldown_seconds = 3.0
-        self._signal_min_age_seconds = 2.0
+        self._min_signal_confirmations = 2
+        self._signal_cooldown_seconds = 1.5
+        self._signal_min_age_seconds = 1.0
         self._signal_state: Dict[str, dict] = {}
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
@@ -959,7 +959,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
         self.tp_input = QtWidgets.QDoubleSpinBox()
         self.tp_input.setRange(0.1, 10.0)
-        self.tp_input.setValue(0.8)
+        self.tp_input.setValue(1.0)
         self.tp_input.setSuffix(" %")
 
         self.sl_input = QtWidgets.QDoubleSpinBox()
@@ -2583,7 +2583,7 @@ class TradingApp(QtWidgets.QMainWindow):
         volume = float(details.get("volume", 0.0) or 0.0)
         spread = snapshot.ask - snapshot.bid
         spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
-        if spread_pct > 0.0015:
+        if spread_pct > 0.0025:
             return None
         range_span = max(high_price - low_price, 0.0)
         range_mid = (high_price + low_price) / 2 if range_span > 0 else last_price
@@ -2601,10 +2601,10 @@ class TradingApp(QtWidgets.QMainWindow):
         range_bias = range_pos * 0.2
         local_extreme_bias = local_extreme * (0.25 if range_pos < 0 else -0.25)
         volatility_pct = snapshot.volatility
-        if range_pct <= 0.003 or volatility_pct < 0.9:
+        if range_pct <= 0.002 or volatility_pct < 0.7:
             return None
         liquidity_hint = turnover if turnover > 0 else volume * last_price
-        if liquidity_hint > 0 and liquidity_hint < 2_500_000:
+        if liquidity_hint > 0 and liquidity_hint < 1_200_000:
             return None
         regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
         if regime_trend:
@@ -2628,11 +2628,11 @@ class TradingApp(QtWidgets.QMainWindow):
         flow_strength = abs(imbalance) * (1 - min(spread_pct * 50, 0.5))
         trend_strength = abs(change_24h)
         range_strength = abs(range_pos)
-        if flow_strength < 0.1 and trend_strength < 0.006:
+        if flow_strength < 0.06 and trend_strength < 0.004:
             return None
-        if confirmations < 4 or range_strength < 0.15:
+        if confirmations < 3 or range_strength < 0.1:
             return None
-        if local_extreme < 0.65:
+        if local_extreme < 0.45:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
@@ -2652,9 +2652,9 @@ class TradingApp(QtWidgets.QMainWindow):
             + abs(orderbook_pressure)
         )
         predicted_confidence = confidence * (1 + abs(orderbook_pressure))
-        if expected_move < 0.006:
+        if expected_move < 0.004:
             return None
-        if predicted_confidence <= threshold * 1.2:
+        if predicted_confidence <= threshold * 1.0:
             return None
         reason = "Trend+Flow" if regime_trend else "MeanRevert+Flow"
         return EntrySignal(
@@ -2711,7 +2711,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return False
         if any(item.direction != signal.direction for item in recent):
             return False
-        if any(item.predicted_move_pct < 0.006 for item in recent):
+        if any(item.predicted_move_pct < 0.004 for item in recent):
             return False
         if any(item.predicted_confidence < signal.predicted_confidence * 0.8 for item in recent):
             return False
