@@ -2111,9 +2111,15 @@ class TradingApp(QtWidgets.QMainWindow):
             position.position_idx = None
 
     def _count_open_positions(self) -> int:
-        open_symbols = {position.symbol for position in self.open_positions}
-        local_symbols = {symbol for symbol, pos in self.positions.items() if pos.qty != 0}
-        return len(open_symbols | local_symbols)
+        open_symbols = [position.symbol for position in self.open_positions]
+        exchange_count = len(open_symbols)
+        exchange_symbol_set = set(open_symbols)
+        local_count = sum(
+            1
+            for symbol, pos in self.positions.items()
+            if pos.qty != 0 and symbol not in exchange_symbol_set
+        )
+        return exchange_count + local_count
 
     def _sync_local_positions(self) -> None:
         if not self.open_positions:
