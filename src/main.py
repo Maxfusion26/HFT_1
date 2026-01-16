@@ -604,6 +604,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_ready = False
         self.trading_stop_cache: Dict[tuple, tuple[float, float]] = {}
         self._last_log_events: Dict[str, str] = {}
+        self.pnl_history: List[PositionHistoryEntry] = []
         self.position_history: List[PositionHistoryEntry] = []
         self.history_keys: set[str] = set()
         self.portfolio_timer = QtCore.QTimer(self)
@@ -941,12 +942,17 @@ class TradingApp(QtWidgets.QMainWindow):
         self.backtest_button = QtWidgets.QPushButton("Run Backtest")
         self.backtest_output = QtWidgets.QTextEdit()
         self.backtest_output.setReadOnly(True)
+        self.backtest_chart = QtWidgets.QTextEdit()
+        self.backtest_chart.setReadOnly(True)
+        self.backtest_chart.setPlaceholderText("Backtest chart preview")
 
         form.addRow("Simulated steps", self.backtest_steps_input)
         layout.addLayout(form)
         layout.addWidget(self.backtest_button)
         layout.addWidget(QtWidgets.QLabel("Backtest Summary"))
         layout.addWidget(self.backtest_output)
+        layout.addWidget(QtWidgets.QLabel("Backtest Chart Preview"))
+        layout.addWidget(self.backtest_chart)
 
     def _setup_history_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.history_tab)
@@ -975,10 +981,28 @@ class TradingApp(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(self.dashboard_tab)
         self.pnl_label = QtWidgets.QLabel("P&L: 0.0 USDT")
         self.pnl_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        filter_row = QtWidgets.QHBoxLayout()
+        filter_row.addWidget(QtWidgets.QLabel("Start"))
+        self.pnl_start_input = QtWidgets.QDateTimeEdit()
+        self.pnl_start_input.setCalendarPopup(True)
+        filter_row.addWidget(self.pnl_start_input)
+        filter_row.addWidget(QtWidgets.QLabel("End"))
+        self.pnl_end_input = QtWidgets.QDateTimeEdit()
+        self.pnl_end_input.setCalendarPopup(True)
+        filter_row.addWidget(self.pnl_end_input)
+        self.pnl_apply_button = QtWidgets.QPushButton("Apply range")
+        filter_row.addWidget(self.pnl_apply_button)
+        filter_row.addStretch()
+
+        now = datetime.utcnow()
+        self.pnl_start_input.setDateTime(QtCore.QDateTime(now - timedelta(days=7)))
+        self.pnl_end_input.setDateTime(QtCore.QDateTime(now))
+
         self.pnl_chart = QtWidgets.QTextEdit()
         self.pnl_chart.setReadOnly(True)
         self.pnl_chart.setPlaceholderText("P&L chart placeholder")
         layout.addWidget(self.pnl_label)
+        layout.addLayout(filter_row)
         layout.addWidget(self.pnl_chart)
 
     def _build_portfolio_section(self) -> QtWidgets.QWidget:
@@ -1153,6 +1177,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.history_timer.timeout.connect(self._request_history)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
+        self.pnl_apply_button.clicked.connect(self._refresh_pnl_chart)
 
     def _persist_config(self) -> None:
         if not self.auto_save_checkbox.isChecked():
@@ -1595,9 +1620,12 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.history_keys.add(key)
         self.position_history.insert(0, entry)
+        if entry.pnl_usdt is not None:
+            self.pnl_history.insert(0, entry)
         if len(self.position_history) > 500:
             self.position_history = self.position_history[:500]
         self._render_history_table()
+        self._refresh_pnl_chart()
 
     def _render_history_table(self) -> None:
         if not hasattr(self, "history_table"):
@@ -1680,8 +1708,12 @@ class TradingApp(QtWidgets.QMainWindow):
             new_entries.append(entry)
         if new_entries:
             self.position_history = new_entries + self.position_history
+            for entry in new_entries:
+                if entry.pnl_usdt is not None:
+                    self.pnl_history.insert(0, entry)
             self.position_history = self.position_history[:500]
             self._render_history_table()
+            self._refresh_pnl_chart()
 
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
         total_equity = "--"
@@ -1695,6 +1727,33 @@ class TradingApp(QtWidgets.QMainWindow):
         self.balance_label.setText(f"Balance: {total_wallet}")
         self.equity_label.setText(f"Equity: {total_equity}")
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
+
+    def _refresh_pnl_chart(self) -> None:
+        if not hasattr(self, "pnl_chart"):
+            return
+        if not hasattr(self, "pnl_start_input") or not hasattr(self, "pnl_end_input"):
+            return
+        start_dt = self.pnl_start_input.dateTime().toPyDateTime()
+        end_dt = self.pnl_end_input.dateTime().toPyDateTime()
+        if end_dt < start_dt:
+            start_dt, end_dt = end_dt, start_dt
+        entries = [
+            entry
+            for entry in self.pnl_history
+            if entry.pnl_usdt is not None and start_dt <= entry.timestamp <= end_dt
+        ]
+        if not entries:
+            self.pnl_chart.setText("No P&L data for selected period.")
+            return
+        entries.sort(key=lambda item: item.timestamp)
+        running_total = 0.0
+        lines = []
+        for entry in entries:
+            running_total += float(entry.pnl_usdt or 0)
+            lines.append(
+                f"{entry.timestamp:%Y-%m-%d %H:%M:%S} | {running_total:,.2f} USDT"
+            )
+        self.pnl_chart.setText("\n".join(lines))
 
     def _sync_trading_stops(self) -> None:
         if not self.client or not self.connected:
@@ -1886,7 +1945,7 @@ class TradingApp(QtWidgets.QMainWindow):
         chart_preview = "\n".join(
             f"{idx:03d} | {value:,.2f}" for idx, value in zip(timestamps[-30:], pnl_series[-30:])
         )
-        self.pnl_chart.setText(chart_preview)
+        self.backtest_chart.setText(chart_preview)
 
     def _run_trading_cycle(self) -> None:
         self.strategy.maker_fee = self.maker_fee_input.value() / 100
