@@ -66,6 +66,9 @@ class OrderRequest:
     order_type: str
     limit_price: Optional[float]
     reduce_only: bool = False
+    tp_price: Optional[float] = None
+    sl_price: Optional[float] = None
+    set_trading_stop: bool = False
     retry: int = 0
     remaining_qty: Optional[float] = None
 
@@ -91,6 +94,15 @@ class PositionHistoryEntry:
     notional_usdt: float
     pnl_usdt: Optional[float] = None
     reason: str = ""
+
+
+@dataclass
+class TradingStopRequest:
+    symbol: str
+    position_idx: int
+    take_profit: Optional[float]
+    stop_loss: Optional[float]
+    source: str = "entry"
 
 
 class ConfigManager:
@@ -326,6 +338,47 @@ class BybitRestClient:
             return {}
         return payload.get("result", {})
 
+    def set_trading_stop(
+        self,
+        symbol: str,
+        position_idx: int,
+        take_profit: Optional[float],
+        stop_loss: Optional[float],
+    ) -> dict:
+        if take_profit is None and stop_loss is None:
+            raise ValueError("At least one of take_profit or stop_loss must be set.")
+        endpoint = "/v5/position/trading-stop"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        payload = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": position_idx,
+            "tpTriggerBy": "LastPrice",
+            "slTriggerBy": "LastPrice",
+            "tpOrderType": "Market",
+            "slOrderType": "Market",
+        }
+        if take_profit is not None:
+            payload["takeProfit"] = f"{take_profit:.6f}"
+        if stop_loss is not None:
+            payload["stopLoss"] = f"{stop_loss:.6f}"
+        payload_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        signature = self._sign(timestamp, recv_window, payload_str)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            f"{self.base_url}{endpoint}", data=payload_str, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
+
 class QtLogHandler(logging.Handler):
     def __init__(self, widget: QtWidgets.QTextEdit) -> None:
         super().__init__()
@@ -437,6 +490,27 @@ class HistoryThread(QtCore.QThread):
             self.finished.emit(history, None)
         except Exception as exc:  # noqa: BLE001
             self.finished.emit([], exc)
+
+
+class TradingStopThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(object, object, object)
+
+    def __init__(self, client: BybitRestClient, request: TradingStopRequest) -> None:
+        super().__init__()
+        self.client = client
+        self.request = request
+
+    def run(self) -> None:
+        try:
+            response = self.client.set_trading_stop(
+                symbol=self.request.symbol,
+                position_idx=self.request.position_idx,
+                take_profit=self.request.take_profit,
+                stop_loss=self.request.stop_loss,
+            )
+            self.finished.emit(self.request, response, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit(self.request, None, exc)
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -514,6 +588,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_detected: Optional[str] = None
         self.limit_shift_attempts: Dict[tuple, int] = {}
         self.order_threads: List[OrderThread] = []
+        self.trading_stop_threads: List[TradingStopThread] = []
         self.ticker_thread: Optional[TickerThread] = None
         self.instrument_thread: Optional[InstrumentThread] = None
         self.instrument_specs_ready = False
@@ -526,6 +601,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self._updating_symbol_list = False
         self.open_positions: List[PositionSnapshot] = []
         self.portfolio_ready = False
+        self.trading_stop_cache: Dict[tuple, tuple[float, float]] = {}
         self.position_history: List[PositionHistoryEntry] = []
         self.history_keys: set[str] = set()
         self.portfolio_timer = QtCore.QTimer(self)
@@ -1146,6 +1222,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.instrument_specs_ready = False
         self.open_positions = []
         self.portfolio_ready = False
+        self.trading_stop_cache = {}
         self.portfolio_timer.stop()
         self.time_status_timer.stop()
         self.history_timer.stop()
@@ -1373,6 +1450,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self._render_portfolio_table()
         self._render_balance_summary(balance, total_unrealized)
         self._sync_local_positions()
+        self._sync_trading_stops()
         self._monitor_positions_for_exit()
 
     def _parse_portfolio_position(self, item: dict) -> Optional[PositionSnapshot]:
@@ -1604,6 +1682,40 @@ class TradingApp(QtWidgets.QMainWindow):
         self.balance_label.setText(f"Balance: {total_wallet}")
         self.equity_label.setText(f"Equity: {total_equity}")
         self.unrealized_label.setText(f"Unrealized PnL: {total_unrealized:,.2f}")
+
+    def _sync_trading_stops(self) -> None:
+        if not self.client or not self.connected:
+            return
+        for position in self.open_positions:
+            last_price = self.ticker_last_price_map.get(position.symbol, position.entry_price)
+            if position.entry_price <= 0 or last_price <= 0:
+                continue
+            tp_price, sl_price = self._get_tp_sl_prices(
+                position.entry_price,
+                last_price,
+                position.side,
+            )
+            position_idx = (
+                position.position_idx
+                if position.position_idx is not None
+                else self._resolve_position_idx(position.side)
+            )
+            if position_idx is None:
+                continue
+            cache_key = (position.symbol, position_idx)
+            cached = self.trading_stop_cache.get(cache_key)
+            rounded = (round(tp_price, 6), round(sl_price, 6))
+            if cached == rounded:
+                continue
+            self._queue_trading_stop(
+                TradingStopRequest(
+                    symbol=position.symbol,
+                    position_idx=position_idx,
+                    take_profit=tp_price,
+                    stop_loss=sl_price,
+                    source="sync",
+                )
+            )
 
     def _get_tp_sl_prices(
         self,
@@ -1853,6 +1965,9 @@ class TradingApp(QtWidgets.QMainWindow):
                 abs(position.qty),
                 price=entry,
                 position_idx_override=position_idx,
+                tp_price=position.tp_price,
+                sl_price=position.sl_price,
+                set_trading_stop=True,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -1994,6 +2109,9 @@ class TradingApp(QtWidgets.QMainWindow):
         price: Optional[float] = None,
         reduce_only: bool = False,
         position_idx_override: Optional[int] = None,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        set_trading_stop: bool = False,
     ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
@@ -2057,6 +2175,9 @@ class TradingApp(QtWidgets.QMainWindow):
             order_type=order_type,
             limit_price=limit_price,
             reduce_only=reduce_only,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            set_trading_stop=set_trading_stop,
             remaining_qty=normalized_qty if order_type == "Limit" else None,
         )
         self._dispatch_order(request)
@@ -2067,6 +2188,14 @@ class TradingApp(QtWidgets.QMainWindow):
         thread = OrderThread(self.client, request)
         thread.finished.connect(self._on_order_finished)
         self.order_threads.append(thread)
+        thread.start()
+
+    def _queue_trading_stop(self, request: TradingStopRequest) -> None:
+        if not self.client:
+            return
+        thread = TradingStopThread(self.client, request)
+        thread.finished.connect(self._on_trading_stop_finished)
+        self.trading_stop_threads.append(thread)
         thread.start()
 
     def _on_order_finished(self, request: OrderRequest, response: Optional[dict], error: object) -> None:
@@ -2128,6 +2257,17 @@ class TradingApp(QtWidgets.QMainWindow):
             request.qty,
             response,
         )
+        if request.set_trading_stop and not request.reduce_only:
+            if request.tp_price is not None or request.sl_price is not None:
+                self._queue_trading_stop(
+                    TradingStopRequest(
+                        symbol=request.symbol,
+                        position_idx=request.position_idx,
+                        take_profit=request.tp_price,
+                        stop_loss=request.sl_price,
+                        source="entry",
+                    )
+                )
         if request.order_type == "Limit" and request.remaining_qty:
             filled = self._extract_filled_qty(response)
             remaining = max(request.remaining_qty - filled, 0)
@@ -2153,6 +2293,44 @@ class TradingApp(QtWidgets.QMainWindow):
                 return
         if request.order_type == "Limit":
             self.limit_shift_attempts.pop((request.symbol, request.side), None)
+
+    def _on_trading_stop_finished(
+        self,
+        request: TradingStopRequest,
+        response: Optional[dict],
+        error: object,
+    ) -> None:
+        if error:
+            logging.error(
+                "Failed to set TP/SL (%s) for %s: %s",
+                request.source,
+                request.symbol,
+                error,
+            )
+            return
+        if response is None:
+            logging.error("Failed to set TP/SL (%s) for %s: empty response.", request.source, request.symbol)
+            return
+        ret_code = response.get("retCode")
+        if ret_code != 0:
+            logging.error(
+                "TP/SL rejected (%s) for %s -> %s",
+                request.source,
+                request.symbol,
+                response,
+            )
+            return
+        cache_key = (request.symbol, request.position_idx)
+        tp_val = round(request.take_profit, 6) if request.take_profit is not None else 0.0
+        sl_val = round(request.stop_loss, 6) if request.stop_loss is not None else 0.0
+        self.trading_stop_cache[cache_key] = (tp_val, sl_val)
+        logging.info(
+            "TP/SL set (%s) for %s: TP %.6f / SL %.6f",
+            request.source,
+            request.symbol,
+            tp_val,
+            sl_val,
+        )
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
