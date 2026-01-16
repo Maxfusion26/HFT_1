@@ -278,6 +278,29 @@ class BybitRestClient:
                 return positions
         return []
 
+    def fetch_position_history(self, limit: int = 50) -> list:
+        endpoint = "/v5/position/closed-pnl"
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        params = {"category": "linear", "limit": limit}
+        query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+        signature = self._sign(timestamp, recv_window, query)
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+        }
+        response = requests.get(
+            f"{self.base_url}{endpoint}", params=params, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            return []
+        return payload.get("result", {}).get("list", [])
+
     def fetch_wallet_balance(self) -> dict:
         endpoint = "/v5/account/wallet-balance"
         timestamp = str(int(time.time() * 1000))
@@ -397,6 +420,21 @@ class PortfolioThread(QtCore.QThread):
             self.finished.emit(positions, balance, None)
         except Exception as exc:  # noqa: BLE001
             self.finished.emit([], {}, exc)
+
+
+class HistoryThread(QtCore.QThread):
+    finished = QtCore.pyqtSignal(list, object)
+
+    def __init__(self, client: BybitRestClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            history = self.client.fetch_position_history()
+            self.finished.emit(history, None)
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit([], exc)
 class HFTStrategy:
     def __init__(self, maker_fee: float = 0.0001, taker_fee: float = 0.0006) -> None:
         self.maker_fee = maker_fee
@@ -478,6 +516,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.instrument_thread: Optional[InstrumentThread] = None
         self.instrument_specs_ready = False
         self.portfolio_thread: Optional[PortfolioThread] = None
+        self.history_thread: Optional[HistoryThread] = None
         self.ticker_symbols: List[str] = []
         self.ticker_change_map: Dict[str, float] = {}
         self.ticker_last_price_map: Dict[str, float] = {}
@@ -486,8 +525,11 @@ class TradingApp(QtWidgets.QMainWindow):
         self.open_positions: List[PositionSnapshot] = []
         self.portfolio_ready = False
         self.position_history: List[PositionHistoryEntry] = []
+        self.history_keys: set[str] = set()
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(2000)
+        self.history_timer = QtCore.QTimer(self)
+        self.history_timer.setInterval(10_000)
         self.time_status_timer = QtCore.QTimer(self)
         self.time_status_timer.setInterval(2000)
         self.symbol_specs = {
@@ -1025,6 +1067,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.trading_timer.timeout.connect(self._run_trading_cycle)
         self.portfolio_timer.timeout.connect(self._request_portfolio)
         self.time_status_timer.timeout.connect(self._update_time_status)
+        self.history_timer.timeout.connect(self._request_history)
         self.backtest_button.clicked.connect(self._run_backtest)
         self.backtest_engine.finished.connect(self._update_backtest_results)
 
@@ -1083,6 +1126,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self._request_instruments()
         self.portfolio_timer.start()
         self.time_status_timer.start()
+        self.history_timer.start()
+        self._request_history()
         self._update_time_status()
         logging.info("Connected to Bybit futures API at %s", base_url)
         self.connection_status_label.setText("Status: Connected")
@@ -1101,6 +1146,10 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_ready = False
         self.portfolio_timer.stop()
         self.time_status_timer.stop()
+        self.history_timer.stop()
+        if self.history_thread and self.history_thread.isRunning():
+            self.history_thread.quit()
+        self.history_thread = None
         if self.instrument_thread and self.instrument_thread.isRunning():
             self.instrument_thread.quit()
         self.instrument_thread = None
@@ -1249,6 +1298,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_thread.finished.connect(self._on_portfolio_ready)
         self.portfolio_thread.start()
 
+    def _request_history(self) -> None:
+        if not self.client or (self.history_thread and self.history_thread.isRunning()):
+            return
+        self.history_thread = HistoryThread(self.client)
+        self.history_thread.finished.connect(self._on_history_ready)
+        self.history_thread.start()
+
     def _update_time_status(self) -> None:
         moscow_time = datetime.now(timezone.utc).astimezone(
             timezone(timedelta(hours=3))
@@ -1294,6 +1350,12 @@ class TradingApp(QtWidgets.QMainWindow):
             logging.error("Failed to fetch portfolio: %s", error)
             return
         self._update_portfolio(balance, positions)
+
+    def _on_history_ready(self, history: list, error: object) -> None:
+        if error:
+            logging.error("Failed to fetch position history: %s", error)
+            return
+        self._update_history_from_api(history)
 
     def _update_portfolio(self, balance: dict, positions: list) -> None:
         self.open_positions = []
@@ -1429,6 +1491,8 @@ class TradingApp(QtWidgets.QMainWindow):
             price=price,
             reason=reason,
         )
+        key = f"{entry.timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|{entry.qty:.6f}|{entry.price:.4f}|{entry.reason}"
+        self.history_keys.add(key)
         self.position_history.insert(0, entry)
         if len(self.position_history) > 500:
             self.position_history = self.position_history[:500]
@@ -1446,6 +1510,49 @@ class TradingApp(QtWidgets.QMainWindow):
             self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{entry.qty:.6f}"))
             self.history_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{entry.price:.4f}"))
             self.history_table.setItem(row, 6, QtWidgets.QTableWidgetItem(entry.reason))
+
+    def _update_history_from_api(self, history: list) -> None:
+        if not history:
+            return
+        new_entries = []
+        for item in history:
+            symbol = item.get("symbol")
+            side = item.get("side") or ""
+            qty_raw = item.get("qty") or item.get("closedSize") or item.get("size")
+            price_raw = (
+                item.get("avgExitPrice")
+                or item.get("avgPrice")
+                or item.get("exitPrice")
+                or item.get("price")
+            )
+            ts_raw = item.get("updatedTime") or item.get("createdTime") or item.get("execTime")
+            if not symbol or not qty_raw or not price_raw or not ts_raw:
+                continue
+            try:
+                qty = float(qty_raw)
+                price = float(price_raw)
+                ts_ms = int(float(ts_raw))
+            except (TypeError, ValueError):
+                continue
+            timestamp = datetime.utcfromtimestamp(ts_ms / 1000)
+            entry = PositionHistoryEntry(
+                timestamp=timestamp,
+                symbol=symbol,
+                side=side or "Unknown",
+                action="Exit",
+                qty=qty,
+                price=price,
+                reason="API",
+            )
+            key = f"{timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|{entry.qty:.6f}|{entry.price:.4f}|{entry.reason}"
+            if key in self.history_keys:
+                continue
+            self.history_keys.add(key)
+            new_entries.append(entry)
+        if new_entries:
+            self.position_history = new_entries + self.position_history
+            self.position_history = self.position_history[:500]
+            self._render_history_table()
 
     def _render_balance_summary(self, balance: dict, total_unrealized: float) -> None:
         total_equity = "--"
