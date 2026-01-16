@@ -517,24 +517,28 @@ class TradingApp(QtWidgets.QMainWindow):
         layout.setSpacing(6)
 
         header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
         self.time_status_label = QtWidgets.QLabel("Moscow: -- | Bybit: -- | Ping: -- ms")
+        self.time_status_label.setProperty("role", "time_status")
         time_font = QtGui.QFont()
         time_font.setBold(True)
         self.time_status_label.setFont(time_font)
-        title_wrap = QtWidgets.QVBoxLayout()
-        title_wrap.addWidget(self.time_status_label)
+        self.time_status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
 
         self.connection_status_label = QtWidgets.QLabel("Disconnected")
         self.connection_status_label.setProperty("status", "idle")
         self.trading_status_label = QtWidgets.QLabel("Auto-trading Off")
         self.trading_status_label.setProperty("status", "idle")
-        status_wrap = QtWidgets.QVBoxLayout()
-        status_wrap.addWidget(self.connection_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
-        status_wrap.addWidget(self.trading_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+        self.connection_status_label.setProperty("role", "status")
+        self.trading_status_label.setProperty("role", "status")
 
-        header.addLayout(title_wrap)
-        header.addStretch()
-        header.addLayout(status_wrap)
+        header.addWidget(self.time_status_label)
+        header.addWidget(self.connection_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+        header.addWidget(self.trading_status_label, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.main_splitter.setHandleWidth(4)
@@ -860,6 +864,8 @@ class TradingApp(QtWidgets.QMainWindow):
             """
             QMainWindow { background: #0b0f1a; }
             QLabel, QCheckBox { color: #e6edf3; font-size: 12px; }
+            QLabel[role="time_status"] { font-size: 12.5px; }
+            QLabel[role="status"] { font-size: 11px; }
             QLabel[role="title"] { font-size: 19px; font-weight: 600; color: #f8fafc; letter-spacing: 0.2px; }
             QLabel[role="subtitle"] { font-size: 11.5px; color: #94a3b8; }
             QLabel[status="idle"] { color: #94a3b8; }
