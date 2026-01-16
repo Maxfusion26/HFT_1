@@ -556,7 +556,10 @@ class PnlChartWidget(QtWidgets.QWidget):
 
     def set_data(self, pnl_values: List[float], dd_values: List[float], title: str) -> None:
         self._pnl_values = pnl_values
-        self._dd_values = dd_values
+        if dd_values and len(dd_values) == len(pnl_values):
+            self._dd_values = dd_values
+        else:
+            self._dd_values = [0.0 for _ in pnl_values]
         self._title = title
         self.update()
 
@@ -574,7 +577,8 @@ class PnlChartWidget(QtWidgets.QWidget):
             return
 
         chart_rect = rect.adjusted(16, 28, -16, -24)
-        min_y = min(min(self._dd_values), 0.0)
+        dd_values = self._dd_values or [0.0 for _ in self._pnl_values]
+        min_y = min(min(dd_values), 0.0)
         max_y = max(self._pnl_values)
         if math.isclose(min_y, max_y):
             max_y = min_y + 1.0
@@ -595,8 +599,8 @@ class PnlChartWidget(QtWidgets.QWidget):
 
         painter.setPen(QtGui.QPen(QtGui.QColor("#f59e0b"), 2))
         dd_path = QtGui.QPainterPath()
-        dd_path.moveTo(_map_point(0, self._dd_values[0]))
-        for idx, value in enumerate(self._dd_values[1:], start=1):
+        dd_path.moveTo(_map_point(0, dd_values[0]))
+        for idx, value in enumerate(dd_values[1:], start=1):
             dd_path.lineTo(_map_point(idx, value))
         painter.drawPath(dd_path)
 
