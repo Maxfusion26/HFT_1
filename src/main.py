@@ -88,6 +88,8 @@ class PositionHistoryEntry:
     action: str
     qty: float
     price: float
+    notional_usdt: float
+    pnl_usdt: Optional[float] = None
     reason: str = ""
 
 
@@ -875,9 +877,9 @@ class TradingApp(QtWidgets.QMainWindow):
         header.setProperty("role", "title")
         layout.addWidget(header)
 
-        self.history_table = QtWidgets.QTableWidget(0, 7)
+        self.history_table = QtWidgets.QTableWidget(0, 9)
         self.history_table.setHorizontalHeaderLabels(
-            ["Time", "Symbol", "Side", "Action", "Qty", "Price", "Reason"]
+            ["Time", "Symbol", "Side", "Action", "Qty", "Price", "Notional (USDT)", "PnL (USDT)", "Reason"]
         )
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setAlternatingRowColors(True)
@@ -1480,6 +1482,8 @@ class TradingApp(QtWidgets.QMainWindow):
         action: str,
         qty: float,
         price: float,
+        notional_usdt: float,
+        pnl_usdt: Optional[float] = None,
         reason: str = "",
     ) -> None:
         entry = PositionHistoryEntry(
@@ -1489,9 +1493,15 @@ class TradingApp(QtWidgets.QMainWindow):
             action=action,
             qty=qty,
             price=price,
+            notional_usdt=notional_usdt,
+            pnl_usdt=pnl_usdt,
             reason=reason,
         )
-        key = f"{entry.timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|{entry.qty:.6f}|{entry.price:.4f}|{entry.reason}"
+        key = (
+            f"{entry.timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|"
+            f"{entry.qty:.6f}|{entry.price:.4f}|{entry.notional_usdt:.2f}|"
+            f"{entry.pnl_usdt if entry.pnl_usdt is not None else 'na'}|{entry.reason}"
+        )
         self.history_keys.add(key)
         self.position_history.insert(0, entry)
         if len(self.position_history) > 500:
@@ -1503,13 +1513,32 @@ class TradingApp(QtWidgets.QMainWindow):
             return
         self.history_table.setRowCount(len(self.position_history))
         for row, entry in enumerate(self.position_history):
-            self.history_table.setItem(row, 0, QtWidgets.QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")))
+            self.history_table.setItem(
+                row,
+                0,
+                QtWidgets.QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+            )
             self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.symbol))
             self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(entry.side))
             self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(entry.action))
             self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{entry.qty:.6f}"))
             self.history_table.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{entry.price:.4f}"))
-            self.history_table.setItem(row, 6, QtWidgets.QTableWidgetItem(entry.reason))
+            self.history_table.setItem(
+                row, 6, QtWidgets.QTableWidgetItem(f"{entry.notional_usdt:.2f}")
+            )
+            pnl_text = "--" if entry.pnl_usdt is None else f"{entry.pnl_usdt:.2f}"
+            self.history_table.setItem(row, 7, QtWidgets.QTableWidgetItem(pnl_text))
+            self.history_table.setItem(row, 8, QtWidgets.QTableWidgetItem(entry.reason))
+            if entry.pnl_usdt is not None:
+                pnl_color = (
+                    QtGui.QColor(34, 197, 94, 70)
+                    if entry.pnl_usdt > 0
+                    else QtGui.QColor(239, 68, 68, 70)
+                )
+                for column in range(self.history_table.columnCount()):
+                    item = self.history_table.item(row, column)
+                    if item is not None:
+                        item.setBackground(pnl_color)
 
     def _update_history_from_api(self, history: list) -> None:
         if not history:
@@ -1525,6 +1554,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 or item.get("exitPrice")
                 or item.get("price")
             )
+            pnl_raw = item.get("closedPnl") or item.get("pnl") or item.get("realisedPnl")
             ts_raw = item.get("updatedTime") or item.get("createdTime") or item.get("execTime")
             if not symbol or not qty_raw or not price_raw or not ts_raw:
                 continue
@@ -1532,9 +1562,11 @@ class TradingApp(QtWidgets.QMainWindow):
                 qty = float(qty_raw)
                 price = float(price_raw)
                 ts_ms = int(float(ts_raw))
+                pnl_usdt = float(pnl_raw) if pnl_raw is not None else None
             except (TypeError, ValueError):
                 continue
             timestamp = datetime.utcfromtimestamp(ts_ms / 1000)
+            notional = qty * price
             entry = PositionHistoryEntry(
                 timestamp=timestamp,
                 symbol=symbol,
@@ -1542,9 +1574,15 @@ class TradingApp(QtWidgets.QMainWindow):
                 action="Exit",
                 qty=qty,
                 price=price,
+                notional_usdt=notional,
+                pnl_usdt=pnl_usdt,
                 reason="API",
             )
-            key = f"{timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|{entry.qty:.6f}|{entry.price:.4f}|{entry.reason}"
+            key = (
+                f"{timestamp.isoformat()}|{entry.symbol}|{entry.side}|{entry.action}|"
+                f"{entry.qty:.6f}|{entry.price:.4f}|{entry.notional_usdt:.2f}|"
+                f"{entry.pnl_usdt if entry.pnl_usdt is not None else 'na'}|{entry.reason}"
+            )
             if key in self.history_keys:
                 continue
             self.history_keys.add(key)
@@ -1680,12 +1718,15 @@ class TradingApp(QtWidgets.QMainWindow):
                     reduce_only=True,
                     position_idx_override=position_idx,
                 )
+                exit_pnl = (last_price - position.entry_price) * position.size * direction
                 self._add_history_entry(
                     position.symbol,
                     close_side,
                     "Exit",
                     position.size,
                     last_price,
+                    notional_usdt=position.size * last_price,
+                    pnl_usdt=exit_pnl,
                     reason=exit_reason,
                 )
                 logging.info(
@@ -1819,6 +1860,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 "Entry",
                 abs(position.qty),
                 entry,
+                notional_usdt=abs(position.qty) * entry,
                 reason="Momentum",
             )
             logging.info(
@@ -1902,6 +1944,8 @@ class TradingApp(QtWidgets.QMainWindow):
                 "Exit",
                 abs(position.qty),
                 exit_price,
+                notional_usdt=abs(position.qty) * exit_price,
+                pnl_usdt=pnl,
                 reason=exit_reason,
             )
             logging.info(
