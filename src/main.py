@@ -610,6 +610,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_timer.setInterval(2000)
         self.history_timer = QtCore.QTimer(self)
         self.history_timer.setInterval(10_000)
+        self.ticker_timer = QtCore.QTimer(self)
+        self.ticker_timer.setInterval(2000)
         self.time_status_timer = QtCore.QTimer(self)
         self.time_status_timer.setInterval(2000)
         self.symbol_specs = {
@@ -1146,6 +1148,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.order_type_input.currentTextChanged.connect(self._toggle_order_type)
         self.trading_timer.timeout.connect(self._run_trading_cycle)
         self.portfolio_timer.timeout.connect(self._request_portfolio)
+        self.ticker_timer.timeout.connect(self._request_tickers)
         self.time_status_timer.timeout.connect(self._update_time_status)
         self.history_timer.timeout.connect(self._request_history)
         self.backtest_button.clicked.connect(self._run_backtest)
@@ -1204,6 +1207,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.position_mode_detected = self._detect_position_mode()
         self._request_tickers()
         self._request_instruments()
+        self.ticker_timer.start()
         self.portfolio_timer.start()
         self.time_status_timer.start()
         self.history_timer.start()
@@ -1225,6 +1229,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.open_positions = []
         self.portfolio_ready = False
         self.trading_stop_cache = {}
+        self.ticker_timer.stop()
         self.portfolio_timer.stop()
         self.time_status_timer.stop()
         self.history_timer.stop()
