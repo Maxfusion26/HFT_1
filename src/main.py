@@ -1329,7 +1329,8 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _log_strategy_overview(self) -> None:
         logging.info(
-            "Strategy: liquidity-weighted symbol scan + multi-factor entry (trend, imbalance, micro-price)."
+            "Strategy: regime-aware entries using trend, order-flow pressure, micro-price bias, and "
+            "range position with fee/spread gating."
         )
 
     def _log_once(self, key: str, message: str, level: int = logging.INFO) -> None:
@@ -2273,33 +2274,52 @@ class TradingApp(QtWidgets.QMainWindow):
         if snapshot.mid <= 0:
             return None
         change_24h = self.ticker_change_map.get(snapshot.symbol, 0.0) / 100
+        details = self.ticker_detail_map.get(snapshot.symbol, {})
+        last_price = details.get("last_price") or snapshot.mid
+        high_price = details.get("high_price") or last_price
+        low_price = details.get("low_price") or last_price
         spread = snapshot.ask - snapshot.bid
         spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
-        if spread_pct > 0.004:
+        if spread_pct > 0.0035:
             return None
+        range_span = max(high_price - low_price, 0.0)
+        range_mid = (high_price + low_price) / 2 if range_span > 0 else last_price
+        range_pos = (
+            (last_price - range_mid) / (range_span / 2) if range_span > 0 else 0.0
+        )
         imbalance = snapshot.imbalance
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
-        momentum = change_24h * 0.6
-        order_flow = imbalance * 0.25
-        micro_bias = micro_edge * 0.15
-        score = momentum + order_flow + micro_bias
+        order_flow = imbalance * 0.35
+        micro_bias = micro_edge * 0.2
+        momentum = change_24h * 0.45
+        range_bias = range_pos * 0.2
+        volatility_pct = snapshot.volatility
+        regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
+        if regime_trend:
+            score = momentum + order_flow + micro_bias + range_bias
+        else:
+            score = (-range_bias * 0.7) + (order_flow * 0.3) + (micro_bias * 0.3) + (momentum * 0.2)
         direction = 1 if score >= 0 else -1
         confirmations = sum(
             1
-            for signal in (momentum, order_flow, micro_bias)
-            if signal * direction > 0.00005
+            for signal in (momentum, order_flow, micro_bias, range_bias)
+            if signal * direction > 0.00004
         )
-        if confirmations < 2:
+        if confirmations < 3:
             return None
-        volatility_pct = snapshot.volatility
-        volatility_boost = 1 + min(volatility_pct / 100, 0.08) * 6
-        confidence = abs(score) * volatility_boost
+        volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
+        liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
+        confidence = abs(score) * volatility_boost * liquidity_boost
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
-        threshold = required_edge + (spread_pct * 0.35)
+        threshold = required_edge + (spread_pct * 0.4)
+        target_pct = max(self.tp_input.value(), 1.0) / 100
+        expected_move = (volatility_pct / 100) * 0.7 + abs(change_24h) * 0.3
+        if expected_move < target_pct * 0.8:
+            return None
         if confidence <= threshold:
             return None
-        reason = "Trend+Flow" if abs(momentum) >= abs(order_flow) else "OrderFlow+Micro"
+        reason = "Trend+Flow" if regime_trend else "MeanRevert+Flow"
         return EntrySignal(
             symbol=snapshot.symbol,
             direction=direction,
@@ -2312,6 +2332,10 @@ class TradingApp(QtWidgets.QMainWindow):
             spread_pct=spread_pct,
             reason=reason,
         )
+
+    @staticmethod
+    def _clamp(value: float, min_value: float, max_value: float) -> float:
+        return max(min_value, min(value, max_value))
 
     def _check_exit(self, snapshot: MarketSnapshot, position: PositionState) -> None:
         if position.qty == 0:
