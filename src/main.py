@@ -2590,7 +2590,7 @@ class TradingApp(QtWidgets.QMainWindow):
             (last_price - range_mid) / (range_span / 2) if range_span > 0 else 0.0
         )
         range_pct = range_span / last_price if last_price else 0.0
-        local_extreme = 1 - min(abs(range_pos), 1.0)
+        local_extreme = min(abs(range_pos), 1.0)
         imbalance = snapshot.imbalance
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
@@ -2631,7 +2631,7 @@ class TradingApp(QtWidgets.QMainWindow):
             return None
         if confirmations < 4 or range_strength < 0.15:
             return None
-        if local_extreme < 0.35:
+        if local_extreme < 0.65:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
