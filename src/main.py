@@ -547,12 +547,15 @@ class EntrySignal:
     reason: str
 
 
-class PnlChartWidget(QtWidgets.QWidget):
+class PnlChartWidget(QtWidgets.QLabel):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._pnl_values: List[float] = []
         self._dd_values: List[float] = []
         self._title = "PnL: нет данных"
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        self.setWordWrap(True)
+        self.setMinimumHeight(200)
 
     def set_data(self, pnl_values: List[float], dd_values: List[float], title: str) -> None:
         if dd_values and len(dd_values) == len(pnl_values):
@@ -567,66 +570,12 @@ class PnlChartWidget(QtWidgets.QWidget):
             self._pnl_values = [value for value in pnl_values if math.isfinite(value)]
             self._dd_values = [0.0 for _ in self._pnl_values]
         self._title = title
-        self.update()
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
-        painter = QtGui.QPainter(self)
-        try:
-            if not painter.isActive():
-                return
-            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-            rect = self.rect().adjusted(12, 12, -12, -12)
-            if rect.width() <= 0 or rect.height() <= 0:
-                return
-            painter.fillRect(rect, QtGui.QColor("#0b1220"))
-            painter.setPen(QtGui.QPen(QtGui.QColor("#1f2937")))
-            painter.drawRect(rect)
-            painter.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
-            title_point = rect.adjusted(8, 6, -8, -6).topLeft()
-            painter.drawText(title_point, self._title)
-
-            if not self._pnl_values:
-                return
-
-            chart_rect = rect.adjusted(16, 28, -16, -24)
-            if chart_rect.width() <= 0 or chart_rect.height() <= 0:
-                return
-            dd_values = self._dd_values
-            if len(dd_values) != len(self._pnl_values):
-                dd_values = [0.0 for _ in self._pnl_values]
-            min_y = min(min(dd_values), 0.0)
-            max_y = max(self._pnl_values)
-            if math.isclose(min_y, max_y):
-                max_y = min_y + 1.0
-            span_y = max_y - min_y
-            span_x = max(len(self._pnl_values) - 1, 1)
-
-            def _map_point(index: int, value: float) -> QtCore.QPointF:
-                x = chart_rect.left() + (index / span_x) * chart_rect.width()
-                y = chart_rect.bottom() - ((value - min_y) / span_y) * chart_rect.height()
-                return QtCore.QPointF(x, y)
-
-            painter.setPen(QtGui.QPen(QtGui.QColor("#1d4ed8"), 2))
-            pnl_path = QtGui.QPainterPath()
-            pnl_path.moveTo(_map_point(0, self._pnl_values[0]))
-            for idx, value in enumerate(self._pnl_values[1:], start=1):
-                pnl_path.lineTo(_map_point(idx, value))
-            painter.drawPath(pnl_path)
-
-            painter.setPen(QtGui.QPen(QtGui.QColor("#f59e0b"), 2))
-            dd_path = QtGui.QPainterPath()
-            dd_path.moveTo(_map_point(0, dd_values[0]))
-            for idx, value in enumerate(dd_values[1:], start=1):
-                dd_path.lineTo(_map_point(idx, value))
-            painter.drawPath(dd_path)
-
-            painter.setPen(QtGui.QPen(QtGui.QColor("#64748b")))
-            painter.drawText(chart_rect.left(), chart_rect.top() - 6, f"{max_y:,.2f}")
-            painter.drawText(chart_rect.left(), chart_rect.bottom() + 16, f"{min_y:,.2f}")
-        except Exception as exc:  # noqa: BLE001
-            logging.exception("PnL chart paint failed: %s", exc)
-        finally:
-            painter.end()
+        summary = [self._title]
+        if self._pnl_values:
+            summary.append(f"Last PnL: {self._pnl_values[-1]:,.2f} USDT")
+        if self._dd_values:
+            summary.append(f"Drawdown: {self._dd_values[-1]:,.2f} USDT")
+        self.setText("\n".join(summary))
 
 
 class HFTStrategy:
