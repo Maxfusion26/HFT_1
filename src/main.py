@@ -93,6 +93,7 @@ class OrderRequest:
     position_idx: int
     order_type: str
     limit_price: Optional[float]
+    time_in_force: str = "GTC"
     reduce_only: bool = False
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
@@ -173,6 +174,7 @@ class BybitRestClient:
         order_type: str = "Market",
         position_idx: int = 0,
         price: Optional[float] = None,
+        time_in_force: str = "GTC",
         reduce_only: bool = False,
     ) -> dict:
         endpoint = "/v5/order/create"
@@ -184,7 +186,7 @@ class BybitRestClient:
             "orderType": order_type,
             "qty": f"{qty:.6f}",
             "category": "linear",
-            "timeInForce": "GTC",
+            "timeInForce": time_in_force,
             "orderLinkId": str(uuid.uuid4()),
             "positionIdx": position_idx,
         }
@@ -440,6 +442,7 @@ class OrderThread(QtCore.QThread):
                 position_idx=self.request.position_idx,
                 order_type=self.request.order_type,
                 price=self.request.limit_price,
+                time_in_force=self.request.time_in_force,
                 reduce_only=self.request.reduce_only,
             )
             self.finished.emit(self.request, response, None)
@@ -2355,7 +2358,6 @@ class TradingApp(QtWidgets.QMainWindow):
                     price=last_price,
                     reduce_only=True,
                     position_idx_override=position_idx,
-                    force_market=True,
                 )
                 exit_pnl = (last_price - position.entry_price) * position.size * direction
                 self._add_history_entry(
@@ -2526,7 +2528,6 @@ class TradingApp(QtWidgets.QMainWindow):
                 tp_price=position.tp_price,
                 sl_price=position.sl_price,
                 set_trading_stop=True,
-                force_market=True,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -2773,7 +2774,6 @@ class TradingApp(QtWidgets.QMainWindow):
                 price=exit_price,
                 reduce_only=True,
                 position_idx_override=position_idx,
-                force_market=True,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -2833,6 +2833,35 @@ class TradingApp(QtWidgets.QMainWindow):
         position = self.positions.get(symbol)
         return bool(position and position.qty != 0)
 
+    def _resolve_follow_limit_price(
+        self,
+        symbol: str,
+        side: str,
+        fallback_price: Optional[float],
+    ) -> Optional[float]:
+        details = self.ticker_detail_map.get(symbol, {})
+        best_bid = details.get("bid_price")
+        best_ask = details.get("ask_price")
+        base_price = best_bid if side == "Buy" else best_ask
+        if not base_price:
+            base_price = fallback_price
+        if not base_price:
+            return None
+        if self.auto_shift_checkbox.isChecked():
+            shift_key = (symbol, side)
+            attempt = self.limit_shift_attempts.get(shift_key, 0) + 1
+            direction = 1 if side == "Buy" else -1
+            shift_pct = self.shift_bps_input.value() / 100
+            base_price = base_price * (1 + (shift_pct * attempt * direction))
+            self.limit_shift_attempts[shift_key] = attempt
+            logging.info(
+                "Follow limit price (%s attempt %s): %.4f",
+                symbol,
+                attempt,
+                base_price,
+            )
+        return base_price
+
     def _place_order(
         self,
         symbol: str,
@@ -2890,26 +2919,16 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         order_type = "Market" if force_market else self.order_type_input.currentText()
         limit_price = None
+        time_in_force = "GTC"
         if order_type == "Limit" and not force_market:
-            limit_price = self.limit_price_input.value()
-            if limit_price <= 0 and price is not None:
-                limit_price = price
+            fallback_price = price
+            if not fallback_price:
+                manual_price = self.limit_price_input.value()
+                fallback_price = manual_price if manual_price > 0 else None
+            limit_price = self._resolve_follow_limit_price(symbol, side, fallback_price)
             if limit_price is None or limit_price <= 0:
-                logging.error("Limit price must be greater than 0.")
+                logging.error("Limit follow price unavailable for %s %s.", side, symbol)
                 return
-            if self.auto_shift_checkbox.isChecked():
-                shift_key = (symbol, side)
-                attempt = self.limit_shift_attempts.get(shift_key, 0) + 1
-                direction = 1 if side == "Buy" else -1
-                shift_pct = self.shift_bps_input.value() / 100
-                limit_price = limit_price * (1 + (shift_pct * attempt * direction))
-                self.limit_shift_attempts[shift_key] = attempt
-                logging.info(
-                    "Auto-shift limit price (%s attempt %s): %.4f",
-                    symbol,
-                    attempt,
-                    limit_price,
-                )
         if limit_price:
             normalized_qty = self._normalize_qty(symbol, normalized_qty, limit_price)
             if normalized_qty is None:
@@ -2922,6 +2941,7 @@ class TradingApp(QtWidgets.QMainWindow):
             position_idx=position_idx,
             order_type=order_type,
             limit_price=limit_price,
+            time_in_force=time_in_force,
             reduce_only=reduce_only,
             tp_price=tp_price,
             sl_price=sl_price,
@@ -2972,6 +2992,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 position_idx=fallback_idx,
                 order_type=request.order_type,
                 limit_price=request.limit_price,
+                time_in_force=request.time_in_force,
                 reduce_only=request.reduce_only,
                 retry=1,
             )
@@ -3038,6 +3059,7 @@ class TradingApp(QtWidgets.QMainWindow):
                     position_idx=request.position_idx,
                     order_type=request.order_type,
                     limit_price=request.limit_price,
+                    time_in_force=request.time_in_force,
                     reduce_only=request.reduce_only,
                     retry=request.retry + 1,
                     remaining_qty=remaining,
