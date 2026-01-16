@@ -570,10 +570,14 @@ class PnlChartWidget(QtWidgets.QWidget):
         self.update()
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
+        painter = QtGui.QPainter(self)
         try:
-            painter = QtGui.QPainter(self)
+            if not painter.isActive():
+                return
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             rect = self.rect().adjusted(12, 12, -12, -12)
+            if rect.width() <= 0 or rect.height() <= 0:
+                return
             painter.fillRect(rect, QtGui.QColor("#0b1220"))
             painter.setPen(QtGui.QPen(QtGui.QColor("#1f2937")))
             painter.drawRect(rect)
@@ -621,6 +625,8 @@ class PnlChartWidget(QtWidgets.QWidget):
             painter.drawText(chart_rect.left(), chart_rect.bottom() + 16, f"{min_y:,.2f}")
         except Exception as exc:  # noqa: BLE001
             logging.exception("PnL chart paint failed: %s", exc)
+        finally:
+            painter.end()
 
 
 class HFTStrategy:
