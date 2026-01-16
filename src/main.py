@@ -354,7 +354,7 @@ class BybitRestClient:
             "category": "linear",
             "symbol": symbol,
             "positionIdx": position_idx,
-            "tpSlMode": "Full",
+            "tpslMode": "Full",
             "tpTriggerBy": "LastPrice",
             "slTriggerBy": "LastPrice",
             "tpOrderType": "Market",
