@@ -5,7 +5,7 @@ import random
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -51,7 +51,7 @@ class PositionState:
     entry_price: float = 0.0
     tp_price: float = 0.0
     sl_price: float = 0.0
-    last_update: datetime = datetime.utcnow()
+    last_update: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     position_idx: Optional[int] = None
 
 
@@ -1003,7 +1003,10 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.symbol_table.verticalHeader().setVisible(False)
         self.symbol_table.setAlternatingRowColors(True)
-        self.symbol_table.setUniformRowHeights(True)
+        self.symbol_table.verticalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Fixed
+        )
+        self.symbol_table.verticalHeader().setDefaultSectionSize(22)
         self.symbol_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1087,7 +1090,10 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setAlternatingRowColors(True)
-        self.history_table.setUniformRowHeights(True)
+        self.history_table.verticalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Fixed
+        )
+        self.history_table.verticalHeader().setDefaultSectionSize(22)
         self.history_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1120,7 +1126,7 @@ class TradingApp(QtWidgets.QMainWindow):
         filter_row.addWidget(self.pnl_apply_button)
         filter_row.addStretch()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         self.pnl_start_input.setDateTime(QtCore.QDateTime(now - timedelta(days=7)))
         self.pnl_end_input.setDateTime(QtCore.QDateTime(now))
 
@@ -1170,7 +1176,10 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         self.positions_table.verticalHeader().setVisible(False)
         self.positions_table.setAlternatingRowColors(True)
-        self.positions_table.setUniformRowHeights(True)
+        self.positions_table.verticalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Fixed
+        )
+        self.positions_table.verticalHeader().setDefaultSectionSize(22)
         self.positions_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1862,7 +1871,7 @@ class TradingApp(QtWidgets.QMainWindow):
         reason: str = "",
     ) -> None:
         entry = PositionHistoryEntry(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             symbol=symbol,
             side=side,
             action=action,
@@ -1947,7 +1956,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 pnl_usdt = float(pnl_raw) if pnl_raw is not None else None
             except (TypeError, ValueError):
                 continue
-            timestamp = datetime.utcfromtimestamp(ts_ms / 1000)
+            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
             notional = qty * price
             entry = PositionHistoryEntry(
                 timestamp=timestamp,
