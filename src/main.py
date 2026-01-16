@@ -1891,10 +1891,9 @@ class TradingApp(QtWidgets.QMainWindow):
         normalized = (qty // step) * step
         normalized = round(normalized, 6)
         if normalized < min_qty:
-            normalized = min_qty
+            return None
         if price and min_notional > 0 and (normalized * price) < min_notional:
-            required = math.ceil((min_notional / price) / step) * step
-            normalized = max(normalized, required, min_qty)
+            return None
         return normalized
 
 
