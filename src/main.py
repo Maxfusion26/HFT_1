@@ -2542,34 +2542,21 @@ class TradingApp(QtWidgets.QMainWindow):
                     level=logging.ERROR,
                 )
                 return
-            position.qty = direction * normalized_qty
-            position.entry_price = entry
             tp_pct = self.tp_input.value() / 100
             sl_pct = self.sl_input.value() / 100
-            position.tp_price = entry * (1 + tp_pct * direction)
-            position.sl_price = entry * (1 - sl_pct * direction)
+            tp_price = entry * (1 + tp_pct * direction)
+            sl_price = entry * (1 - sl_pct * direction)
             position_idx = self._resolve_position_idx("Buy" if direction > 0 else "Sell")
-            position.position_idx = position_idx
-            self.positions[snapshot.symbol] = position
             self._place_order(
                 snapshot.symbol,
                 "Buy" if direction > 0 else "Sell",
-                abs(position.qty),
+                abs(normalized_qty),
                 price=entry,
                 position_idx_override=position_idx,
-                tp_price=position.tp_price,
-                sl_price=position.sl_price,
+                tp_price=tp_price,
+                sl_price=sl_price,
                 set_trading_stop=True,
                 entry_signal=entry_signal,
-            )
-            self._add_history_entry(
-                snapshot.symbol,
-                "Buy" if direction > 0 else "Sell",
-                "Entry",
-                abs(position.qty),
-                entry,
-                notional_usdt=abs(position.qty) * entry,
-                reason=entry_signal.reason,
             )
             return
 
@@ -3190,6 +3177,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 logging.error(
                     "Position mode mismatch persists; no alternate positionIdx available."
                 )
+                finalize_entry()
                 return
             logging.warning("Position mode mismatch; retrying with positionIdx=%s", fallback_idx)
             retry_request = OrderRequest(
@@ -3244,6 +3232,26 @@ class TradingApp(QtWidgets.QMainWindow):
         if request.is_entry and not request.reduce_only:
             entry_price = request.entry_price or request.limit_price or 0.0
             direction = "LONG" if request.side == "Buy" else "SHORT"
+            position_qty = request.qty if request.side == "Buy" else -request.qty
+            position_state = PositionState(
+                symbol=request.symbol,
+                qty=position_qty,
+                entry_price=entry_price,
+                tp_price=request.tp_price or 0.0,
+                sl_price=request.sl_price or 0.0,
+                position_idx=request.position_idx,
+            )
+            self.positions[request.symbol] = position_state
+            if entry_price > 0:
+                self._add_history_entry(
+                    request.symbol,
+                    request.side,
+                    "Entry",
+                    abs(request.qty),
+                    entry_price,
+                    notional_usdt=abs(request.qty) * entry_price,
+                    reason=request.entry_reason,
+                )
             logging.info(
                 "%s entry %s @ %.4f (score %.4f, conf %.4f, pred %.2f%%)",
                 request.symbol,
