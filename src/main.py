@@ -6,6 +6,7 @@ import sys
 import time
 import uuid
 import faulthandler
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -723,6 +724,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self._signal_cooldown_seconds = 1.5
         self._signal_min_age_seconds = 1.0
         self._signal_state: Dict[str, dict] = {}
+        self._price_history: Dict[str, deque[float]] = {}
+        self._price_history_depth = 20
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
@@ -1830,6 +1833,13 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
         self.ticker_detail_map = details_map
+        for symbol, last_price in last_price_map.items():
+            if last_price <= 0:
+                continue
+            history = self._price_history.setdefault(
+                symbol, deque(maxlen=self._price_history_depth)
+            )
+            history.append(last_price)
         now = time.time()
         refresh_interval = (
             self.auto_select_interval.value() if self.auto_select_checkbox.isChecked() else 5
@@ -2595,11 +2605,17 @@ class TradingApp(QtWidgets.QMainWindow):
         imbalance = snapshot.imbalance
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
+        history = self._price_history.get(snapshot.symbol)
+        if not history or len(history) < 5:
+            return None
+        short_return = (history[-1] - history[-5]) / history[-5]
+        reversal_hint = short_return if range_pos < 0 else -short_return
         order_flow = imbalance * 0.35
         micro_bias = micro_edge * 0.2
         momentum = change_24h * 0.45
         range_bias = range_pos * 0.2
         local_extreme_bias = local_extreme * (0.25 if range_pos < 0 else -0.25)
+        reversal_bias = reversal_hint * 0.4
         volatility_pct = snapshot.volatility
         if range_pct <= 0.002 or volatility_pct < 0.7:
             return None
@@ -2608,7 +2624,14 @@ class TradingApp(QtWidgets.QMainWindow):
             return None
         regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
         if regime_trend:
-            score = momentum + order_flow + micro_bias + range_bias + local_extreme_bias
+            score = (
+                momentum
+                + order_flow
+                + micro_bias
+                + range_bias
+                + local_extreme_bias
+                + reversal_bias
+            )
         else:
             score = (
                 (-range_bias * 0.7)
@@ -2616,13 +2639,21 @@ class TradingApp(QtWidgets.QMainWindow):
                 + (micro_bias * 0.3)
                 + (momentum * 0.2)
                 + (local_extreme_bias * 0.5)
+                + (reversal_bias * 0.7)
             )
         direction = 1 if score >= 0 else -1
         if micro_edge * direction <= 0:
             return None
         confirmations = sum(
             1
-            for signal in (momentum, order_flow, micro_bias, range_bias, local_extreme_bias)
+            for signal in (
+                momentum,
+                order_flow,
+                micro_bias,
+                range_bias,
+                local_extreme_bias,
+                reversal_bias,
+            )
             if signal * direction > 0.00004
         )
         flow_strength = abs(imbalance) * (1 - min(spread_pct * 50, 0.5))
@@ -2634,6 +2665,8 @@ class TradingApp(QtWidgets.QMainWindow):
             return None
         if local_extreme < 0.45:
             return None
+        if reversal_hint < 0.0005:
+            return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
         confidence = abs(score) * volatility_boost * liquidity_boost
@@ -2643,12 +2676,14 @@ class TradingApp(QtWidgets.QMainWindow):
         trend_component = abs(change_24h) * 0.25
         micro_component = abs(micro_edge) * 0.3
         range_component = range_pct * 0.2
+        reversal_component = abs(reversal_hint) * 0.25
         volatility_component = (volatility_pct / 100) * 0.35
         expected_move = (
             volatility_component
             + trend_component
             + range_component
             + micro_component
+            + reversal_component
             + abs(orderbook_pressure)
         )
         predicted_confidence = confidence * (1 + abs(orderbook_pressure))
