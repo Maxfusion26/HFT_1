@@ -2913,10 +2913,30 @@ class TradingApp(QtWidgets.QMainWindow):
         position = self.positions.get(symbol)
         return bool(position and position.qty != 0)
 
+    def _entry_slots_available(self) -> int:
+        max_positions = self.max_positions_input.value()
+        pending = len(self._pending_entry_symbols)
+        return max(max_positions - self._count_open_positions() - pending, 0)
+
     def _can_dispatch_entry(self, symbol: str) -> bool:
+        if self._entry_slots_available() <= 0:
+            return False
         if not self._pending_entry_symbols:
             return True
         return symbol in self._pending_entry_symbols
+
+    def _cap_entry_qty(
+        self,
+        symbol: str,
+        qty: float,
+        reference_price: Optional[float],
+    ) -> Optional[float]:
+        if not reference_price or reference_price <= 0:
+            return None
+        desired_usdt = self.position_size_input.value()
+        max_qty = desired_usdt / reference_price
+        capped_qty = min(qty, max_qty)
+        return self._normalize_qty(symbol, capped_qty, reference_price)
 
     def _resolve_follow_limit_price(
         self,
@@ -3063,6 +3083,19 @@ class TradingApp(QtWidgets.QMainWindow):
             else:
                 logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
+        if not reduce_only:
+            capped_qty = self._cap_entry_qty(symbol, normalized_qty, reference_price)
+            if capped_qty is None:
+                logging.error("Entry size invalid for %s; missing price or below min qty.", symbol)
+                return
+            if capped_qty < normalized_qty:
+                logging.info(
+                    "Capping entry qty for %s from %.6f to %.6f to respect position size.",
+                    symbol,
+                    normalized_qty,
+                    capped_qty,
+                )
+            normalized_qty = capped_qty
         position_idx = (
             position_idx_override
             if position_idx_override is not None
@@ -3110,6 +3143,8 @@ class TradingApp(QtWidgets.QMainWindow):
                 f"entry_wait_pending:{request.symbol}",
                 "Entry order waiting for prior entry fill/reject.",
             )
+            if self._entry_slots_available() <= 0:
+                return
             self._pending_entry_queue.append(request)
             return
         if request.is_entry:
@@ -3248,6 +3283,8 @@ class TradingApp(QtWidgets.QMainWindow):
             next_request = self._pending_entry_queue.popleft()
             if self._shutting_down:
                 self._pending_entry_queue.clear()
+                return
+            if self._entry_slots_available() <= 0:
                 return
             if self._has_open_position(next_request.symbol):
                 continue
