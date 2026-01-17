@@ -1,30 +1,27 @@
-# HFT Bybit Futures Suite (Prototype)
+# HFT Bybit Futures Suite (Rust CLI)
 
-A PyQt6 prototype for an adaptive HFT market-making system on Bybit futures. The UI includes
-API key storage, trading toggles, position sizing, TP/SL controls, multi-symbol selection,
-logging, and a backtesting dashboard.
+A Rust-based CLI for interacting with Bybit's futures REST API. It supports storing API keys,
+fetching tickers, reading server time, inspecting positions, checking wallet balances, and
+placing orders.
 
 ## Features
-- Auto-save API keys (stored locally in `~/.hft_bybit/config.json`).
-- Connect/Disconnect and Auto Trading toggles.
-- Market-making mode with imbalance skew controls and fee-aware thresholds.
-- TP/SL controls (no timeout-based exits).
-- Multi-symbol scoring table plus auto-select top 5 symbols by 24h growth (always-on, sourced from Bybit tickers).
-- Backtesting simulator and P&L dashboard placeholder with fee buffer.
-- File + UI logging.
-- Max concurrent positions control to cap simultaneous open trades.
-- Live portfolio tab showing balance, equity, open positions, and real-time PnL.
+- Local config storage in `~/.hft_bybit/config.json`.
+- Fetch Bybit linear tickers.
+- Read Bybit server time.
+- Inspect open positions and wallet balances.
+- Place Market/Limit orders via REST.
 
 ## Run
 ```bash
-python src/main.py
+cargo run -- config --api-key YOUR_KEY --api-secret YOUR_SECRET
+cargo run -- tickers
+cargo run -- server-time
+cargo run -- positions
+cargo run -- wallet
+cargo run -- order BTCUSDT Buy 0.001 --order-type Market
 ```
 
 ## Notes
-- This prototype can send live orders via Bybit REST API (configure key/secret and base URL).
-- Requires `requests` for REST calls.
-- Order sizes are normalized to per-symbol step sizes to avoid invalid quantity errors.
-- Supports Market and Limit order types (set in the Trading Controls).
-- Limit orders can auto-shift price in small steps until filled (auto-shift is enabled by default).
-- Position mode auto-detects and falls back to one-way if it cannot be resolved; override manually if needed.
-- Fee assumptions: default UI values are 0.06% taker / 0.01% maker with an extra fee buffer.
+- The CLI uses Bybit REST API v5 endpoints.
+- Order sizes and price formatting follow the Bybit API expectations.
+- Set `--base-url` in the config command if you need testnet.
