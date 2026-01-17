@@ -106,6 +106,11 @@ class OrderRequest:
     time_in_force: str = "GTC"
     reduce_only: bool = False
     is_entry: bool = False
+    entry_price: Optional[float] = None
+    entry_reason: str = ""
+    entry_score: float = 0.0
+    entry_confidence: float = 0.0
+    entry_predicted_move: float = 0.0
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
     set_trading_stop: bool = False
@@ -2555,6 +2560,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 tp_price=position.tp_price,
                 sl_price=position.sl_price,
                 set_trading_stop=True,
+                entry_signal=entry_signal,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -2564,15 +2570,6 @@ class TradingApp(QtWidgets.QMainWindow):
                 entry,
                 notional_usdt=abs(position.qty) * entry,
                 reason=entry_signal.reason,
-            )
-            logging.info(
-                "%s entry %s @ %.2f (score %.4f, conf %.4f, pred %.2f%%)",
-                snapshot.symbol,
-                "LONG" if direction > 0 else "SHORT",
-                entry,
-                entry_signal.score,
-                entry_signal.confidence,
-                entry_signal.predicted_move_pct * 100,
             )
             return
 
@@ -3045,6 +3042,7 @@ class TradingApp(QtWidgets.QMainWindow):
         sl_price: Optional[float] = None,
         set_trading_stop: bool = False,
         force_market: bool = False,
+        entry_signal: Optional[EntrySignal] = None,
     ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
@@ -3129,6 +3127,11 @@ class TradingApp(QtWidgets.QMainWindow):
             time_in_force=time_in_force,
             reduce_only=reduce_only,
             is_entry=not reduce_only,
+            entry_price=price,
+            entry_reason=entry_signal.reason if entry_signal else "",
+            entry_score=entry_signal.score if entry_signal else 0.0,
+            entry_confidence=entry_signal.confidence if entry_signal else 0.0,
+            entry_predicted_move=entry_signal.predicted_move_pct if entry_signal else 0.0,
             tp_price=tp_price,
             sl_price=sl_price,
             set_trading_stop=set_trading_stop,
@@ -3238,6 +3241,18 @@ class TradingApp(QtWidgets.QMainWindow):
             request.qty,
             response,
         )
+        if request.is_entry and not request.reduce_only:
+            entry_price = request.entry_price or request.limit_price or 0.0
+            direction = "LONG" if request.side == "Buy" else "SHORT"
+            logging.info(
+                "%s entry %s @ %.4f (score %.4f, conf %.4f, pred %.2f%%)",
+                request.symbol,
+                direction,
+                entry_price,
+                request.entry_score,
+                request.entry_confidence,
+                request.entry_predicted_move * 100,
+            )
         if request.set_trading_stop and not request.reduce_only:
             if request.tp_price is not None or request.sl_price is not None:
                 self._queue_trading_stop(
