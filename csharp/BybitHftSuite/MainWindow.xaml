@@ -154,14 +154,16 @@
                 </StackPanel>
               </GroupBox>
               <GroupBox Header="Manual Actions">
-                <StackPanel>
-                  <WrapPanel>
-                    <Button Content="Send Buy" Click="OnManualBuyClick" />
-                    <Button Content="Send Sell" Background="#DC2626" Click="OnManualSellClick" />
-                    <Button Content="Flatten" Background="#6B7280" Click="OnFlattenClick" />
-                  </WrapPanel>
-                  <TextBlock Foreground="#9CA3AF" Text="Manual order actions are stubbed until trading logic is ported." />
-                </StackPanel>
+                <GroupBox.Content>
+                  <StackPanel>
+                    <WrapPanel>
+                      <Button Content="Send Buy" Click="OnManualBuyClick" />
+                      <Button Content="Send Sell" Background="#DC2626" Click="OnManualSellClick" />
+                      <Button Content="Flatten" Background="#6B7280" Click="OnFlattenClick" />
+                    </WrapPanel>
+                    <TextBlock Foreground="#9CA3AF" Text="Manual order actions are stubbed until trading logic is ported." />
+                  </StackPanel>
+                </GroupBox.Content>
               </GroupBox>
             </StackPanel>
           </Grid>
