@@ -76,6 +76,15 @@ class MarketSnapshot:
 
 
 @dataclass
+class Candle:
+    open: float
+    high: float
+    low: float
+    close: float
+    start_ts: int
+
+
+@dataclass
 class PositionState:
     symbol: str
     qty: float = 0.0
@@ -725,8 +734,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self._signal_cooldown_seconds = 1.5
         self._signal_min_age_seconds = 1.0
         self._signal_state: Dict[str, dict] = {}
-        self._price_history: Dict[str, deque[float]] = {}
-        self._price_history_depth = 20
+        self._price_history: Dict[str, deque[tuple[int, float]]] = {}
+        self._price_history_depth = 4000
         self._pending_entry_symbols: set[str] = set()
         self._pending_entry_queue: deque[OrderRequest] = deque()
         self.portfolio_timer = QtCore.QTimer(self)
@@ -1840,13 +1849,14 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
         self.ticker_detail_map = details_map
+        now_ts = int(time.time())
         for symbol, last_price in last_price_map.items():
             if last_price <= 0:
                 continue
             history = self._price_history.setdefault(
                 symbol, deque(maxlen=self._price_history_depth)
             )
-            history.append(last_price)
+            history.append((now_ts, last_price))
         now = time.time()
         refresh_interval = (
             self.auto_select_interval.value() if self.auto_select_checkbox.isChecked() else 5
@@ -2613,16 +2623,35 @@ class TradingApp(QtWidgets.QMainWindow):
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
         history = self._price_history.get(snapshot.symbol)
-        if not history or len(history) < 5:
+        if not history or len(history) < 8:
             return None
-        short_return = (history[-1] - history[-5]) / history[-5]
+        series = list(history)
+        short_return = (series[-1][1] - series[-5][1]) / series[-5][1]
         reversal_hint = short_return if range_pos < 0 else -short_return
+        minute_candles = self._build_candles(series, 60)
+        five_min_candles = self._build_candles(series, 300)
+        fifteen_min_candles = self._build_candles(series, 900)
+        hour_candles = self._build_candles(series, 3600)
+        if not minute_candles or not five_min_candles:
+            return None
+        minute_trend = self._candle_trend(minute_candles[-5:])
+        five_trend = self._candle_trend(five_min_candles[-3:])
+        fifteen_trend = self._candle_trend(fifteen_min_candles[-2:])
+        hour_trend = self._candle_trend(hour_candles[-2:])
+        multi_trend = (minute_trend * 0.4) + (five_trend * 0.3) + (fifteen_trend * 0.2) + (hour_trend * 0.1)
+        multi_extreme = (
+            (self._candle_extreme(minute_candles[-5:], last_price) * 0.4)
+            + (self._candle_extreme(five_min_candles[-3:], last_price) * 0.3)
+            + (self._candle_extreme(fifteen_min_candles[-2:], last_price) * 0.2)
+            + (self._candle_extreme(hour_candles[-2:], last_price) * 0.1)
+        )
         order_flow = imbalance * 0.35
         micro_bias = micro_edge * 0.2
-        momentum = change_24h * 0.45
+        momentum = change_24h * 0.35
         range_bias = range_pos * 0.2
         local_extreme_bias = local_extreme * (0.25 if range_pos < 0 else -0.25)
-        reversal_bias = reversal_hint * 0.4
+        reversal_bias = reversal_hint * 0.35
+        trend_bias = multi_trend * 0.3
         volatility_pct = snapshot.volatility
         if range_pct <= 0.002 or volatility_pct < 0.7:
             return None
@@ -2638,15 +2667,17 @@ class TradingApp(QtWidgets.QMainWindow):
                 + range_bias
                 + local_extreme_bias
                 + reversal_bias
+                + trend_bias
             )
         else:
             score = (
                 (-range_bias * 0.7)
                 + (order_flow * 0.3)
                 + (micro_bias * 0.3)
-                + (momentum * 0.2)
+                + (momentum * 0.15)
                 + (local_extreme_bias * 0.5)
                 + (reversal_bias * 0.7)
+                + (trend_bias * 0.3)
             )
         direction = 1 if score >= 0 else -1
         if micro_edge * direction <= 0:
@@ -2660,6 +2691,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 range_bias,
                 local_extreme_bias,
                 reversal_bias,
+                trend_bias,
             )
             if signal * direction > 0.00004
         )
@@ -2672,7 +2704,11 @@ class TradingApp(QtWidgets.QMainWindow):
             return None
         if local_extreme < 0.45:
             return None
+        if multi_extreme < 0.5:
+            return None
         if reversal_hint < 0.0005:
+            return None
+        if multi_trend * direction < -0.0002:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
@@ -2680,17 +2716,19 @@ class TradingApp(QtWidgets.QMainWindow):
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
         threshold = required_edge + (spread_pct * 0.6)
         orderbook_pressure = imbalance * 0.15
-        trend_component = abs(change_24h) * 0.25
+        trend_24h_component = abs(change_24h) * 0.25
         micro_component = abs(micro_edge) * 0.3
         range_component = range_pct * 0.2
         reversal_component = abs(reversal_hint) * 0.25
+        trend_component = abs(multi_trend) * 0.3
         volatility_component = (volatility_pct / 100) * 0.35
         expected_move = (
             volatility_component
-            + trend_component
+            + trend_24h_component
             + range_component
             + micro_component
             + reversal_component
+            + trend_component
             + abs(orderbook_pressure)
         )
         predicted_confidence = confidence * (1 + abs(orderbook_pressure))
@@ -2908,6 +2946,72 @@ class TradingApp(QtWidgets.QMainWindow):
                 base_price,
             )
         return base_price
+
+    @staticmethod
+    def _build_candles(
+        series: List[tuple[int, float]],
+        interval_seconds: int,
+    ) -> List[Candle]:
+        if not series:
+            return []
+        candles: List[Candle] = []
+        bucket_start = (series[0][0] // interval_seconds) * interval_seconds
+        open_price = series[0][1]
+        high_price = open_price
+        low_price = open_price
+        close_price = open_price
+        for timestamp, price in series:
+            bucket = (timestamp // interval_seconds) * interval_seconds
+            if bucket != bucket_start:
+                candles.append(
+                    Candle(
+                        open=open_price,
+                        high=high_price,
+                        low=low_price,
+                        close=close_price,
+                        start_ts=bucket_start,
+                    )
+                )
+                bucket_start = bucket
+                open_price = price
+                high_price = price
+                low_price = price
+            high_price = max(high_price, price)
+            low_price = min(low_price, price)
+            close_price = price
+        candles.append(
+            Candle(
+                open=open_price,
+                high=high_price,
+                low=low_price,
+                close=close_price,
+                start_ts=bucket_start,
+            )
+        )
+        return candles
+
+    @staticmethod
+    def _candle_trend(candles: List[Candle]) -> float:
+        if len(candles) < 2:
+            return 0.0
+        first = candles[0].open
+        last = candles[-1].close
+        if first == 0:
+            return 0.0
+        return (last - first) / first
+
+    @staticmethod
+    def _candle_extreme(candles: List[Candle], last_price: float) -> float:
+        if not candles or last_price <= 0:
+            return 0.0
+        high_price = max(candle.high for candle in candles)
+        low_price = min(candle.low for candle in candles)
+        span = high_price - low_price
+        if span <= 0:
+            return 0.0
+        range_mid = (high_price + low_price) / 2
+        range_pos = (last_price - range_mid) / (span / 2)
+        return min(abs(range_pos), 1.0)
 
     def _place_order(
         self,
