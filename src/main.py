@@ -2657,7 +2657,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 + range_bias
                 + local_extreme_bias
                 + reversal_bias
-                + trend_bias
+                + (trend_bias * 1.2)
             )
         else:
             score = (
@@ -2670,6 +2670,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 + (trend_bias * 0.3)
             )
         direction = 1 if score >= 0 else -1
+        extreme_direction = 1 if range_pos < 0 else -1
         if micro_edge * direction <= 0:
             return None
         confirmations = sum(
@@ -2698,7 +2699,9 @@ class TradingApp(QtWidgets.QMainWindow):
             return None
         if reversal_hint < 0.0005:
             return None
-        if multi_trend * direction < -0.0002:
+        if abs(multi_trend) > 0.0008 and (multi_trend * direction) < 0:
+            return None
+        if local_extreme >= 0.6 and abs(multi_trend) < 0.0008 and direction != extreme_direction:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
