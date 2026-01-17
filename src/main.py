@@ -96,6 +96,7 @@ class OrderRequest:
     limit_price: Optional[float]
     time_in_force: str = "GTC"
     reduce_only: bool = False
+    is_entry: bool = False
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
     set_trading_stop: bool = False
@@ -726,6 +727,8 @@ class TradingApp(QtWidgets.QMainWindow):
         self._signal_state: Dict[str, dict] = {}
         self._price_history: Dict[str, deque[float]] = {}
         self._price_history_depth = 20
+        self._pending_entry_symbols: set[str] = set()
+        self._pending_entry_queue: deque[OrderRequest] = deque()
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
@@ -2872,6 +2875,11 @@ class TradingApp(QtWidgets.QMainWindow):
         position = self.positions.get(symbol)
         return bool(position and position.qty != 0)
 
+    def _can_dispatch_entry(self, symbol: str) -> bool:
+        if not self._pending_entry_symbols:
+            return True
+        return symbol in self._pending_entry_symbols
+
     def _resolve_follow_limit_price(
         self,
         symbol: str,
@@ -2982,6 +2990,7 @@ class TradingApp(QtWidgets.QMainWindow):
             limit_price=limit_price,
             time_in_force=time_in_force,
             reduce_only=reduce_only,
+            is_entry=not reduce_only,
             tp_price=tp_price,
             sl_price=sl_price,
             set_trading_stop=set_trading_stop,
@@ -2992,6 +3001,15 @@ class TradingApp(QtWidgets.QMainWindow):
     def _dispatch_order(self, request: OrderRequest) -> None:
         if not self.client or self._shutting_down:
             return
+        if request.is_entry and not self._can_dispatch_entry(request.symbol):
+            self._log_once(
+                f"entry_wait_pending:{request.symbol}",
+                "Entry order waiting for prior entry fill/reject.",
+            )
+            self._pending_entry_queue.append(request)
+            return
+        if request.is_entry:
+            self._pending_entry_symbols.add(request.symbol)
         thread = OrderThread(self.client, request)
         thread.finished.connect(self._on_order_finished)
         self._register_thread(thread, "OrderThread")
@@ -3008,13 +3026,20 @@ class TradingApp(QtWidgets.QMainWindow):
         thread.start()
 
     def _on_order_finished(self, request: OrderRequest, response: Optional[dict], error: object) -> None:
+        if request.is_entry:
+            self._pending_entry_symbols.discard(request.symbol)
+        def finalize_entry() -> None:
+            if request.is_entry:
+                self._dispatch_pending_entries()
         if error:
             logging.error("Order failed: %s", error)
             self._cleanup_order_threads()
+            finalize_entry()
             return
         if response is None:
             logging.error("Order failed: empty response.")
             self._cleanup_order_threads()
+            finalize_entry()
             return
         if self._is_position_mode_error(response) and request.retry == 0:
             fallback_idx = 0 if request.position_idx in (1, 2) else (1 if request.side == "Buy" else 2)
@@ -3033,9 +3058,11 @@ class TradingApp(QtWidgets.QMainWindow):
                 limit_price=request.limit_price,
                 time_in_force=request.time_in_force,
                 reduce_only=request.reduce_only,
+                is_entry=request.is_entry,
                 retry=1,
             )
             self._dispatch_order(retry_request)
+            finalize_entry()
             return
         ret_code = response.get("retCode")
         if ret_code != 0:
@@ -3061,6 +3088,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 request.qty,
                 response,
             )
+            finalize_entry()
             return
         self._cleanup_order_threads()
         logging.info(
@@ -3100,13 +3128,27 @@ class TradingApp(QtWidgets.QMainWindow):
                     limit_price=request.limit_price,
                     time_in_force=request.time_in_force,
                     reduce_only=request.reduce_only,
+                    is_entry=request.is_entry,
                     retry=request.retry + 1,
                     remaining_qty=remaining,
                 )
                 self._dispatch_order(retry_request)
+                finalize_entry()
                 return
         if request.order_type == "Limit":
             self.limit_shift_attempts.pop((request.symbol, request.side), None)
+        finalize_entry()
+
+    def _dispatch_pending_entries(self) -> None:
+        while self._pending_entry_queue and not self._pending_entry_symbols:
+            next_request = self._pending_entry_queue.popleft()
+            if self._shutting_down:
+                self._pending_entry_queue.clear()
+                return
+            if self._has_open_position(next_request.symbol):
+                continue
+            self._dispatch_order(next_request)
+            break
 
     def _on_trading_stop_finished(
         self,
