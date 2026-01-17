@@ -3105,6 +3105,7 @@ class TradingApp(QtWidgets.QMainWindow):
         limit_price = None
         time_in_force = "GTC"
         if order_type == "Limit" and not force_market:
+            time_in_force = "PostOnly"
             fallback_price = price
             if not fallback_price:
                 manual_price = self.limit_price_input.value()
