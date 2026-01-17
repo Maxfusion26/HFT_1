@@ -15,9 +15,17 @@ logging, and a backtesting dashboard.
 - Max concurrent positions control to cap simultaneous open trades.
 - Live portfolio tab showing balance, equity, open positions, and real-time PnL.
 
-## Run
+## Python UI (current trading logic)
 ```bash
 python src/main.py
+```
+
+## C# WPF UI (new Win-only shell)
+The first phase of the C# migration introduces a WPF UI shell that mirrors the existing tabs
+and controls. Trading logic will be ported next.
+
+```bash
+dotnet build csharp/BybitHftSuite/BybitHftSuite.csproj
 ```
 
 ## Notes
