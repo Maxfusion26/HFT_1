@@ -2508,6 +2508,12 @@ class TradingApp(QtWidgets.QMainWindow):
                     "Portfolio not synced yet; skipping new entry.",
                 )
                 return
+            if self._entry_slots_available() <= 0:
+                self._log_once(
+                    "entry_slots_exhausted",
+                    "Entry slots exhausted; waiting for open/pending positions.",
+                )
+                return
             if self._count_open_positions() >= self.max_positions_input.value():
                 self._log_once(
                     "max_positions_reached",
@@ -2905,9 +2911,7 @@ class TradingApp(QtWidgets.QMainWindow):
     def _can_dispatch_entry(self, symbol: str) -> bool:
         if self._entry_slots_available() <= 0:
             return False
-        if not self._pending_entry_symbols:
-            return True
-        return symbol in self._pending_entry_symbols
+        return not self._pending_entry_symbols
 
     def _cap_entry_qty(
         self,
@@ -3129,13 +3133,18 @@ class TradingApp(QtWidgets.QMainWindow):
     def _dispatch_order(self, request: OrderRequest) -> None:
         if not self.client or self._shutting_down:
             return
+        if request.is_entry and self._entry_slots_available() <= 0:
+            self._log_once(
+                f"entry_blocked_slots:{request.symbol}",
+                "Entry blocked: max positions reached (including pending).",
+                level=logging.WARNING,
+            )
+            return
         if request.is_entry and not self._can_dispatch_entry(request.symbol):
             self._log_once(
                 f"entry_wait_pending:{request.symbol}",
                 "Entry order waiting for prior entry fill/reject.",
             )
-            if self._entry_slots_available() <= 0:
-                return
             self._pending_entry_queue.append(request)
             return
         if request.is_entry:
