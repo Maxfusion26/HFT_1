@@ -1,21 +1,58 @@
 using System;
+using System.Linq;
+using System.Net.Http;
 using System.Windows;
 
 namespace BybitHftSuite;
 
 public partial class MainWindow : Window
 {
+    private readonly HttpClient _httpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(15)
+    };
+
     public MainWindow()
     {
         InitializeComponent();
         AppendLog("UI initialized. Trading logic not yet ported.");
     }
 
-    private void OnConnectClick(object sender, RoutedEventArgs e)
+    private async void OnConnectClick(object sender, RoutedEventArgs e)
     {
-        ConnectionStatus.Text = "Connection status: Connected (stub)";
-        ConnectionStatus.Foreground = System.Windows.Media.Brushes.LightGreen;
-        AppendLog("Connect requested. Network layer will be added in the next phase.");
+        ConnectionStatus.Text = "Connection status: Connecting...";
+        ConnectionStatus.Foreground = System.Windows.Media.Brushes.Gold;
+
+        var apiKey = ApiKeyInput.Text?.Trim() ?? string.Empty;
+        var apiSecret = ApiSecretInput.Text?.Trim() ?? string.Empty;
+        var baseUrl = BaseUrlInput.Text?.Trim() ?? "https://api.bybit.com";
+        var client = new BybitRestClient(_httpClient, apiKey, apiSecret, baseUrl);
+
+        try
+        {
+            var serverTime = await client.FetchServerTimeAsync();
+            AppendLog($"Server time: {serverTime.Result?.TimeSecond ?? "n/a"}");
+
+            var tickers = await client.FetchLinearTickersAsync();
+            AppendLog($"Tickers fetched: {tickers.Result?.List.Count ?? 0}");
+
+            var positions = await client.FetchPositionsAsync();
+            AppendLog($"Positions fetched: {positions.Result?.List.Count ?? 0}");
+
+            var balance = await client.FetchWalletBalanceAsync();
+            var account = balance.Result?.List.FirstOrDefault();
+            var equity = account?.Coin.FirstOrDefault(coin => coin.Coin == "USDT")?.Equity;
+            AppendLog($"Wallet balance fetched. USDT equity: {equity ?? "n/a"}");
+
+            ConnectionStatus.Text = "Connection status: Connected";
+            ConnectionStatus.Foreground = System.Windows.Media.Brushes.LightGreen;
+        }
+        catch (Exception ex)
+        {
+            ConnectionStatus.Text = "Connection status: Error";
+            ConnectionStatus.Foreground = System.Windows.Media.Brushes.IndianRed;
+            AppendLog($"Connection failed: {ex.Message}");
+        }
     }
 
     private void OnDisconnectClick(object sender, RoutedEventArgs e)

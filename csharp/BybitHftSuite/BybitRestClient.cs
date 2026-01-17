@@ -58,6 +58,7 @@ public sealed class BybitRestClient
 
     private async Task<BybitResponse<T>> SendSignedGetAsync<T>(Uri uri, CancellationToken cancellationToken)
     {
+        EnsureApiCredentials();
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
         const string recvWindow = "5000";
         var query = uri.Query.StartsWith("?") ? uri.Query[1..] : uri.Query;
@@ -98,6 +99,14 @@ public sealed class BybitRestClient
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_apiSecret));
         var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private void EnsureApiCredentials()
+    {
+        if (string.IsNullOrWhiteSpace(_apiKey) || string.IsNullOrWhiteSpace(_apiSecret))
+        {
+            throw new InvalidOperationException("API key/secret required for signed endpoints.");
+        }
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
