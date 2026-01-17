@@ -2624,6 +2624,7 @@ class TradingApp(QtWidgets.QMainWindow):
         hour_candles = self._build_candles(series, 3600)
         if not minute_candles or not five_min_candles:
             return None
+        short_reversal = self._detect_short_reversal(minute_candles)
         minute_trend = self._candle_trend(minute_candles[-5:])
         five_trend = self._candle_trend(five_min_candles[-3:])
         fifteen_trend = self._candle_trend(fifteen_min_candles[-2:])
@@ -2702,6 +2703,8 @@ class TradingApp(QtWidgets.QMainWindow):
         if abs(multi_trend) > 0.0008 and (multi_trend * direction) < 0:
             return None
         if local_extreme >= 0.6 and abs(multi_trend) < 0.0008 and direction != extreme_direction:
+            return None
+        if direction < 0 and not short_reversal:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
@@ -3023,6 +3026,32 @@ class TradingApp(QtWidgets.QMainWindow):
         range_mid = (high_price + low_price) / 2
         range_pos = (last_price - range_mid) / (span / 2)
         return min(abs(range_pos), 1.0)
+
+    @staticmethod
+    def _detect_short_reversal(candles: List[Candle]) -> bool:
+        if len(candles) < 3:
+            return False
+        last = candles[-1]
+        prev = candles[-2]
+        prev2 = candles[-3]
+        last_range = last.high - last.low
+        if last_range <= 0:
+            return False
+        upper_wick = last.high - max(last.open, last.close)
+        wick_ratio = upper_wick / last_range
+        bearish_close = last.close < last.open
+        mid_reject = last.close < (last.high + last.low) / 2
+        prev_impulse = (prev.close > prev.open) and ((prev.high - prev.low) > last_range * 0.7)
+        recent_peak = last.high >= max(c.high for c in candles[-6:])
+        lower_high = last.high <= max(prev.high, prev2.high)
+        return bool(
+            bearish_close
+            and mid_reject
+            and prev_impulse
+            and recent_peak
+            and lower_high
+            and wick_ratio >= 0.45
+        )
 
     def _place_order(
         self,
