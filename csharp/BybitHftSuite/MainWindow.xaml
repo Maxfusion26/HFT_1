@@ -87,7 +87,7 @@
                   </ComboBox>
                   <TextBlock Text="Risk Limits" />
                   <TextBox Text="Default" IsReadOnly="True" />
-                  <TextBlock Text="Last sync" Foreground="#9CA3AF" Text="No sync yet" />
+                  <TextBlock Text="Last sync: No sync yet" Foreground="#9CA3AF" />
                 </StackPanel>
               </GroupBox>
               <GroupBox Header="Status">
