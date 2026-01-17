@@ -6,6 +6,7 @@ import sys
 import time
 import uuid
 import faulthandler
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -75,6 +76,15 @@ class MarketSnapshot:
 
 
 @dataclass
+class Candle:
+    open: float
+    high: float
+    low: float
+    close: float
+    start_ts: int
+
+
+@dataclass
 class PositionState:
     symbol: str
     qty: float = 0.0
@@ -93,7 +103,14 @@ class OrderRequest:
     position_idx: int
     order_type: str
     limit_price: Optional[float]
+    time_in_force: str = "GTC"
     reduce_only: bool = False
+    is_entry: bool = False
+    entry_price: Optional[float] = None
+    entry_reason: str = ""
+    entry_score: float = 0.0
+    entry_confidence: float = 0.0
+    entry_predicted_move: float = 0.0
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
     set_trading_stop: bool = False
@@ -173,6 +190,7 @@ class BybitRestClient:
         order_type: str = "Market",
         position_idx: int = 0,
         price: Optional[float] = None,
+        time_in_force: str = "GTC",
         reduce_only: bool = False,
     ) -> dict:
         endpoint = "/v5/order/create"
@@ -184,7 +202,7 @@ class BybitRestClient:
             "orderType": order_type,
             "qty": f"{qty:.6f}",
             "category": "linear",
-            "timeInForce": "GTC",
+            "timeInForce": time_in_force,
             "orderLinkId": str(uuid.uuid4()),
             "positionIdx": position_idx,
         }
@@ -440,6 +458,7 @@ class OrderThread(QtCore.QThread):
                 position_idx=self.request.position_idx,
                 order_type=self.request.order_type,
                 price=self.request.limit_price,
+                time_in_force=self.request.time_in_force,
                 reduce_only=self.request.reduce_only,
             )
             self.finished.emit(self.request, response, None)
@@ -572,9 +591,12 @@ class EntrySignal:
     momentum: float
     imbalance: float
     micro_edge: float
+    local_extreme: float
     volatility_pct: float
     spread_pct: float
     reason: str
+    predicted_move_pct: float
+    predicted_confidence: float
 
 
 class PnlChartWidget(QtWidgets.QLabel):
@@ -686,6 +708,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.limit_shift_attempts: Dict[tuple, int] = {}
         self.order_threads: List[OrderThread] = []
         self.trading_stop_threads: List[TradingStopThread] = []
+        self._active_threads: set[QtCore.QThread] = set()
         self.ticker_thread: Optional[TickerThread] = None
         self.instrument_thread: Optional[InstrumentThread] = None
         self.instrument_specs_ready = False
@@ -708,6 +731,18 @@ class TradingApp(QtWidgets.QMainWindow):
         self._rendering_symbol_table = False
         self._rendering_positions_table = False
         self._rendering_history_table = False
+        self._shutting_down = False
+        self._thread_shutdown_timeout_ms = 12_000
+        self._signal_history: Dict[str, List[EntrySignal]] = {}
+        self._signal_history_depth = 6
+        self._min_signal_confirmations = 2
+        self._signal_cooldown_seconds = 1.5
+        self._signal_min_age_seconds = 1.0
+        self._signal_state: Dict[str, dict] = {}
+        self._price_history: Dict[str, deque[tuple[int, float]]] = {}
+        self._price_history_depth = 4000
+        self._pending_entry_symbols: set[str] = set()
+        self._pending_entry_queue: deque[OrderRequest] = deque()
         self.portfolio_timer = QtCore.QTimer(self)
         self.portfolio_timer.setInterval(1000)
         self.history_timer = QtCore.QTimer(self)
@@ -740,7 +775,9 @@ class TradingApp(QtWidgets.QMainWindow):
         self._refresh_symbol_table()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._shutting_down = True
         self._shutdown_threads()
+        self._teardown_logging()
         super().closeEvent(event)
 
     def _shutdown_threads(self) -> None:
@@ -753,9 +790,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self._stop_thread(self.instrument_thread)
         self._stop_thread(self.portfolio_thread)
         self._stop_thread(self.history_thread)
-        for thread in list(self.order_threads):
-            self._stop_thread(thread)
-        for thread in list(self.trading_stop_threads):
+        for thread in list(self._active_threads):
             self._stop_thread(thread)
         self.order_threads.clear()
         self.trading_stop_threads.clear()
@@ -764,11 +799,39 @@ class TradingApp(QtWidgets.QMainWindow):
         self.portfolio_thread = None
         self.history_thread = None
 
-    @staticmethod
-    def _stop_thread(thread: Optional[QtCore.QThread]) -> None:
-        if thread and thread.isRunning():
-            thread.quit()
-            thread.wait(1500)
+    def _stop_thread(self, thread: Optional[QtCore.QThread]) -> None:
+        if not thread:
+            return
+        if not thread.isRunning():
+            self._active_threads.discard(thread)
+            return
+        thread.requestInterruption()
+        thread.quit()
+        if not thread.wait(self._thread_shutdown_timeout_ms):
+            logging.warning(
+                "Thread %s did not stop in time; terminating.", thread.objectName() or thread
+            )
+            thread.terminate()
+            thread.wait(2000)
+        self._active_threads.discard(thread)
+
+    def _register_thread(self, thread: QtCore.QThread, name: str) -> None:
+        thread.setObjectName(name)
+        self._active_threads.add(thread)
+        thread.finished.connect(lambda: self._active_threads.discard(thread))
+        thread.finished.connect(thread.deleteLater)
+
+    def _teardown_logging(self) -> None:
+        try:
+            faulthandler.disable()
+        except Exception:  # noqa: BLE001
+            logging.exception("Failed to disable faulthandler")
+        if self._fault_log_handle:
+            try:
+                self._fault_log_handle.close()
+            except OSError:
+                logging.exception("Failed to close fault log handle")
+            self._fault_log_handle = None
 
     def _setup_ui(self) -> None:
         self.tabs = QtWidgets.QTabWidget()
@@ -854,6 +917,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_secret_input.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.api_base_url_input = QtWidgets.QLineEdit("https://api.bybit.com")
         self.auto_save_checkbox = QtWidgets.QCheckBox("Auto-save")
+        self.debug_logging_checkbox = QtWidgets.QCheckBox("Debug logging")
 
         creds_layout.addWidget(QtWidgets.QLabel("API Key"), 0, 0)
         creds_layout.addWidget(self.api_key_input, 0, 1)
@@ -862,6 +926,7 @@ class TradingApp(QtWidgets.QMainWindow):
         creds_layout.addWidget(QtWidgets.QLabel("Base URL"), 2, 0)
         creds_layout.addWidget(self.api_base_url_input, 2, 1)
         creds_layout.addWidget(self.auto_save_checkbox, 3, 0, 1, 2)
+        creds_layout.addWidget(self.debug_logging_checkbox, 4, 0, 1, 2)
 
         controls_group = QtWidgets.QGroupBox("Trading Controls")
         controls_group.setProperty("card", "true")
@@ -918,7 +983,7 @@ class TradingApp(QtWidgets.QMainWindow):
 
         self.tp_input = QtWidgets.QDoubleSpinBox()
         self.tp_input.setRange(0.1, 10.0)
-        self.tp_input.setValue(0.8)
+        self.tp_input.setValue(1.0)
         self.tp_input.setSuffix(" %")
 
         self.sl_input = QtWidgets.QDoubleSpinBox()
@@ -1258,6 +1323,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.api_secret_input.setText(data.get("api_secret", ""))
         self.api_base_url_input.setText(data.get("base_url", "https://api.bybit.com"))
         self.auto_save_checkbox.setChecked(data.get("auto_save", False))
+        self.debug_logging_checkbox.setChecked(data.get("debug_logging", False))
         if geometry := data.get("window_geometry"):
             self.restoreGeometry(QtCore.QByteArray.fromHex(geometry.encode("utf-8")))
         if splitter_sizes := data.get("splitter_sizes"):
@@ -1288,8 +1354,9 @@ class TradingApp(QtWidgets.QMainWindow):
     def _setup_logging(self) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         ROOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log_level = logging.DEBUG if self.debug_logging_checkbox.isChecked() else logging.INFO
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=log_level,
             format="%(asctime)s | %(levelname)s | %(message)s",
             handlers=[
                 logging.FileHandler(LOG_FILE, encoding="utf-8"),
@@ -1297,6 +1364,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 QtLogHandler(self.log_output),
             ],
         )
+        self._set_logging_level(log_level)
         QtCore.qInstallMessageHandler(_log_qt_message)
         try:
             self._fault_log_handle = ROOT_LOG_FILE.open("a", encoding="utf-8")
@@ -1310,6 +1378,7 @@ class TradingApp(QtWidgets.QMainWindow):
         self.disconnect_button.clicked.connect(self._disconnect)
         self.auto_trading_toggle.toggled.connect(self._toggle_auto_trading)
         self.auto_save_checkbox.toggled.connect(self._persist_config)
+        self.debug_logging_checkbox.toggled.connect(self._toggle_debug_logging)
         self.api_key_input.textChanged.connect(self._persist_config)
         self.api_secret_input.textChanged.connect(self._persist_config)
         self.api_base_url_input.textChanged.connect(self._persist_config)
@@ -1356,6 +1425,7 @@ class TradingApp(QtWidgets.QMainWindow):
             "api_secret": self.api_secret_input.text().strip(),
             "base_url": self.api_base_url_input.text().strip(),
             "auto_save": self.auto_save_checkbox.isChecked(),
+            "debug_logging": self.debug_logging_checkbox.isChecked(),
             "position_size": self.position_size_input.value(),
             "max_positions": self.max_positions_input.value(),
             "tp_pct": self.tp_input.value(),
@@ -1384,6 +1454,19 @@ class TradingApp(QtWidgets.QMainWindow):
 
     def _toggle_order_type(self, order_type: str) -> None:
         self.limit_price_input.setEnabled(order_type == "Limit")
+
+    def _toggle_debug_logging(self, enabled: bool) -> None:
+        level = logging.DEBUG if enabled else logging.INFO
+        self._set_logging_level(level)
+        self._persist_config()
+        logging.info("Debug logging %s", "enabled" if enabled else "disabled")
+
+    @staticmethod
+    def _set_logging_level(level: int) -> None:
+        logger = logging.getLogger()
+        logger.setLevel(level)
+        for handler in logger.handlers:
+            handler.setLevel(level)
 
     def _connect(self) -> None:
         api_key = self.api_key_input.text().strip()
@@ -1685,35 +1768,43 @@ class TradingApp(QtWidgets.QMainWindow):
         return fallback, {}
 
     def _request_tickers(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.ticker_thread and self.ticker_thread.isRunning()):
             return
         self.ticker_thread = TickerThread(self.client)
         self.ticker_thread.finished.connect(self._on_tickers_ready)
-        self.ticker_thread.finished.connect(self.ticker_thread.deleteLater)
+        self._register_thread(self.ticker_thread, "TickerThread")
         self.ticker_thread.start()
 
     def _request_instruments(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.instrument_thread and self.instrument_thread.isRunning()):
             return
         self.instrument_thread = InstrumentThread(self.client)
         self.instrument_thread.finished.connect(self._on_instruments_ready)
-        self.instrument_thread.finished.connect(self.instrument_thread.deleteLater)
+        self._register_thread(self.instrument_thread, "InstrumentThread")
         self.instrument_thread.start()
 
     def _request_portfolio(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.portfolio_thread and self.portfolio_thread.isRunning()):
             return
         self.portfolio_thread = PortfolioThread(self.client)
         self.portfolio_thread.finished.connect(self._on_portfolio_ready)
-        self.portfolio_thread.finished.connect(self.portfolio_thread.deleteLater)
+        self._register_thread(self.portfolio_thread, "PortfolioThread")
         self.portfolio_thread.start()
 
     def _request_history(self) -> None:
+        if self._shutting_down:
+            return
         if not self.client or (self.history_thread and self.history_thread.isRunning()):
             return
         self.history_thread = HistoryThread(self.client)
         self.history_thread.finished.connect(self._on_history_ready)
-        self.history_thread.finished.connect(self.history_thread.deleteLater)
+        self._register_thread(self.history_thread, "HistoryThread")
         self.history_thread.start()
 
     def _update_time_status(self) -> None:
@@ -1763,6 +1854,14 @@ class TradingApp(QtWidgets.QMainWindow):
         self.ticker_change_map = change_map
         self.ticker_last_price_map = last_price_map
         self.ticker_detail_map = details_map
+        now_ts = int(time.time())
+        for symbol, last_price in last_price_map.items():
+            if last_price <= 0:
+                continue
+            history = self._price_history.setdefault(
+                symbol, deque(maxlen=self._price_history_depth)
+            )
+            history.append((now_ts, last_price))
         now = time.time()
         refresh_interval = (
             self.auto_select_interval.value() if self.auto_select_checkbox.isChecked() else 5
@@ -2291,7 +2390,6 @@ class TradingApp(QtWidgets.QMainWindow):
                     price=last_price,
                     reduce_only=True,
                     position_idx_override=position_idx,
-                    force_market=True,
                 )
                 exit_pnl = (last_price - position.entry_price) * position.size * direction
                 self._add_history_entry(
@@ -2403,11 +2501,17 @@ class TradingApp(QtWidgets.QMainWindow):
             self.positions[snapshot.symbol] = position
             return
 
-        if entry_signal:
+        if entry_signal and self._should_enter_position(entry_signal):
             if self.connected and not self.portfolio_ready:
                 self._log_once(
                     "portfolio_not_synced",
                     "Portfolio not synced yet; skipping new entry.",
+                )
+                return
+            if self._entry_slots_available() <= 0:
+                self._log_once(
+                    "entry_slots_exhausted",
+                    "Entry slots exhausted; waiting for open/pending positions.",
                 )
                 return
             if self._count_open_positions() >= self.max_positions_input.value():
@@ -2444,44 +2548,21 @@ class TradingApp(QtWidgets.QMainWindow):
                     level=logging.ERROR,
                 )
                 return
-            position.qty = direction * normalized_qty
-            position.entry_price = entry
             tp_pct = self.tp_input.value() / 100
             sl_pct = self.sl_input.value() / 100
-            position.tp_price = entry * (1 + tp_pct * direction)
-            position.sl_price = entry * (1 - sl_pct * direction)
+            tp_price = entry * (1 + tp_pct * direction)
+            sl_price = entry * (1 - sl_pct * direction)
             position_idx = self._resolve_position_idx("Buy" if direction > 0 else "Sell")
-            position.position_idx = position_idx
-            self.positions[snapshot.symbol] = position
             self._place_order(
                 snapshot.symbol,
                 "Buy" if direction > 0 else "Sell",
-                abs(position.qty),
+                abs(normalized_qty),
                 price=entry,
                 position_idx_override=position_idx,
-                tp_price=position.tp_price,
-                sl_price=position.sl_price,
+                tp_price=tp_price,
+                sl_price=sl_price,
                 set_trading_stop=True,
-                force_market=True,
-            )
-            self._add_history_entry(
-                snapshot.symbol,
-                "Buy" if direction > 0 else "Sell",
-                "Entry",
-                abs(position.qty),
-                entry,
-                notional_usdt=abs(position.qty) * entry,
-                reason=entry_signal.reason,
-            )
-            logging.info(
-                "%s entry %s @ %.2f (score %.4f, conf %.4f, TP %.2f / SL %.2f)",
-                snapshot.symbol,
-                "LONG" if direction > 0 else "SHORT",
-                entry,
-                entry_signal.score,
-                entry_signal.confidence,
-                position.tp_price,
-                position.sl_price,
+                entry_signal=entry_signal,
             )
             return
 
@@ -2519,7 +2600,7 @@ class TradingApp(QtWidgets.QMainWindow):
         volume = float(details.get("volume", 0.0) or 0.0)
         spread = snapshot.ask - snapshot.bid
         spread_pct = spread / snapshot.mid if snapshot.mid else 0.0
-        if spread_pct > 0.0035:
+        if spread_pct > 0.0025:
             return None
         range_span = max(high_price - low_price, 0.0)
         range_mid = (high_price + low_price) / 2 if range_span > 0 else last_price
@@ -2527,47 +2608,129 @@ class TradingApp(QtWidgets.QMainWindow):
             (last_price - range_mid) / (range_span / 2) if range_span > 0 else 0.0
         )
         range_pct = range_span / last_price if last_price else 0.0
+        local_extreme = min(abs(range_pos), 1.0)
         imbalance = snapshot.imbalance
         micro_price = snapshot.mid + (imbalance * spread * 0.5)
         micro_edge = (micro_price - snapshot.mid) / snapshot.mid
+        history = self._price_history.get(snapshot.symbol)
+        if not history or len(history) < 8:
+            return None
+        series = list(history)
+        short_return = (series[-1][1] - series[-5][1]) / series[-5][1]
+        reversal_hint = short_return if range_pos < 0 else -short_return
+        minute_candles = self._build_candles(series, 60)
+        five_min_candles = self._build_candles(series, 300)
+        fifteen_min_candles = self._build_candles(series, 900)
+        hour_candles = self._build_candles(series, 3600)
+        if not minute_candles or not five_min_candles:
+            return None
+        short_reversal = self._detect_short_reversal(minute_candles)
+        minute_trend = self._candle_trend(minute_candles[-5:])
+        five_trend = self._candle_trend(five_min_candles[-3:])
+        fifteen_trend = self._candle_trend(fifteen_min_candles[-2:])
+        hour_trend = self._candle_trend(hour_candles[-2:])
+        multi_trend = (minute_trend * 0.4) + (five_trend * 0.3) + (fifteen_trend * 0.2) + (hour_trend * 0.1)
+        multi_extreme = (
+            (self._candle_extreme(minute_candles[-5:], last_price) * 0.4)
+            + (self._candle_extreme(five_min_candles[-3:], last_price) * 0.3)
+            + (self._candle_extreme(fifteen_min_candles[-2:], last_price) * 0.2)
+            + (self._candle_extreme(hour_candles[-2:], last_price) * 0.1)
+        )
         order_flow = imbalance * 0.35
         micro_bias = micro_edge * 0.2
-        momentum = change_24h * 0.45
+        momentum = change_24h * 0.35
         range_bias = range_pos * 0.2
+        local_extreme_bias = local_extreme * (0.25 if range_pos < 0 else -0.25)
+        reversal_bias = reversal_hint * 0.35
+        trend_bias = multi_trend * 0.3
         volatility_pct = snapshot.volatility
-        if range_pct <= 0.002 or volatility_pct < 0.6:
+        if range_pct <= 0.002 or volatility_pct < 0.7:
             return None
         liquidity_hint = turnover if turnover > 0 else volume * last_price
-        if liquidity_hint > 0 and liquidity_hint < 1_000_000:
+        if liquidity_hint > 0 and liquidity_hint < 1_200_000:
             return None
         regime_trend = abs(change_24h) > 0.005 and volatility_pct >= 0.8
         if regime_trend:
-            score = momentum + order_flow + micro_bias + range_bias
+            score = (
+                momentum
+                + order_flow
+                + micro_bias
+                + range_bias
+                + local_extreme_bias
+                + reversal_bias
+                + (trend_bias * 1.2)
+            )
         else:
-            score = (-range_bias * 0.7) + (order_flow * 0.3) + (micro_bias * 0.3) + (momentum * 0.2)
+            score = (
+                (-range_bias * 0.7)
+                + (order_flow * 0.3)
+                + (micro_bias * 0.3)
+                + (momentum * 0.15)
+                + (local_extreme_bias * 0.5)
+                + (reversal_bias * 0.7)
+                + (trend_bias * 0.3)
+            )
         direction = 1 if score >= 0 else -1
+        extreme_direction = 1 if range_pos < 0 else -1
+        if micro_edge * direction <= 0:
+            return None
         confirmations = sum(
             1
-            for signal in (momentum, order_flow, micro_bias, range_bias)
+            for signal in (
+                momentum,
+                order_flow,
+                micro_bias,
+                range_bias,
+                local_extreme_bias,
+                reversal_bias,
+                trend_bias,
+            )
             if signal * direction > 0.00004
         )
         flow_strength = abs(imbalance) * (1 - min(spread_pct * 50, 0.5))
         trend_strength = abs(change_24h)
         range_strength = abs(range_pos)
-        if flow_strength < 0.08 and trend_strength < 0.004:
+        if flow_strength < 0.06 and trend_strength < 0.004:
             return None
         if confirmations < 3 or range_strength < 0.1:
+            return None
+        if local_extreme < 0.45:
+            return None
+        if multi_extreme < 0.5:
+            return None
+        if reversal_hint < 0.0005:
+            return None
+        if abs(multi_trend) > 0.0008 and (multi_trend * direction) < 0:
+            return None
+        if local_extreme >= 0.6 and abs(multi_trend) < 0.0008 and direction != extreme_direction:
+            return None
+        if direction < 0 and not short_reversal:
             return None
         volatility_boost = 1 + min(volatility_pct / 100, 0.1) * 5
         liquidity_boost = self._clamp(1.2 - (spread_pct * 80), 0.5, 1.2)
         confidence = abs(score) * volatility_boost * liquidity_boost
         required_edge = self.strategy.required_edge(use_maker, fee_buffer)
-        threshold = required_edge + (spread_pct * 0.4)
-        target_pct = max(self.tp_input.value(), 1.0) / 100
-        expected_move = (volatility_pct / 100) * 0.7 + abs(change_24h) * 0.2 + range_pct * 0.1
-        if expected_move < target_pct * 0.8:
+        threshold = required_edge + (spread_pct * 0.6)
+        orderbook_pressure = imbalance * 0.15
+        trend_24h_component = abs(change_24h) * 0.25
+        micro_component = abs(micro_edge) * 0.3
+        range_component = range_pct * 0.2
+        reversal_component = abs(reversal_hint) * 0.25
+        trend_component = abs(multi_trend) * 0.3
+        volatility_component = (volatility_pct / 100) * 0.35
+        expected_move = (
+            volatility_component
+            + trend_24h_component
+            + range_component
+            + micro_component
+            + reversal_component
+            + trend_component
+            + abs(orderbook_pressure)
+        )
+        predicted_confidence = confidence * (1 + abs(orderbook_pressure))
+        if expected_move < 0.004:
             return None
-        if confidence <= threshold:
+        if predicted_confidence <= threshold * 1.0:
             return None
         reason = "Trend+Flow" if regime_trend else "MeanRevert+Flow"
         return EntrySignal(
@@ -2578,10 +2741,59 @@ class TradingApp(QtWidgets.QMainWindow):
             momentum=momentum,
             imbalance=imbalance,
             micro_edge=micro_edge,
+            local_extreme=local_extreme,
             volatility_pct=volatility_pct,
             spread_pct=spread_pct,
             reason=reason,
+            predicted_move_pct=expected_move,
+            predicted_confidence=predicted_confidence,
         )
+
+    def _should_enter_position(self, signal: EntrySignal) -> bool:
+        now = time.time()
+        history = self._signal_history.setdefault(signal.symbol, [])
+        previous = history[-1] if history else None
+        history.append(signal)
+        if len(history) > self._signal_history_depth:
+            self._signal_history[signal.symbol] = history[-self._signal_history_depth :]
+            history = self._signal_history[signal.symbol]
+
+        state = self._signal_state.setdefault(
+            signal.symbol,
+            {
+                "last_entry_ts": 0.0,
+                "last_signal_ts": 0.0,
+                "streak": 0,
+                "streak_start_ts": now,
+            },
+        )
+        if now - state["last_entry_ts"] < self._signal_cooldown_seconds:
+            return False
+
+        if previous and signal.direction == previous.direction:
+            state["streak"] += 1
+        else:
+            state["streak"] = 1
+            state["streak_start_ts"] = now
+        state["last_signal_ts"] = now
+
+        if state["streak"] < self._min_signal_confirmations:
+            return False
+        if now - state["streak_start_ts"] < self._signal_min_age_seconds:
+            return False
+
+        recent = history[-self._min_signal_confirmations :]
+        if len(recent) < self._min_signal_confirmations:
+            return False
+        if any(item.direction != signal.direction for item in recent):
+            return False
+        if any(item.predicted_move_pct < 0.004 for item in recent):
+            return False
+        if any(item.predicted_confidence < signal.predicted_confidence * 0.8 for item in recent):
+            return False
+
+        state["last_entry_ts"] = now
+        return True
 
     @staticmethod
     def _clamp(value: float, min_value: float, max_value: float) -> float:
@@ -2638,7 +2850,6 @@ class TradingApp(QtWidgets.QMainWindow):
                 price=exit_price,
                 reduce_only=True,
                 position_idx_override=position_idx,
-                force_market=True,
             )
             self._add_history_entry(
                 snapshot.symbol,
@@ -2698,6 +2909,150 @@ class TradingApp(QtWidgets.QMainWindow):
         position = self.positions.get(symbol)
         return bool(position and position.qty != 0)
 
+    def _entry_slots_available(self) -> int:
+        max_positions = self.max_positions_input.value()
+        pending = len(self._pending_entry_symbols)
+        return max(max_positions - self._count_open_positions() - pending, 0)
+
+    def _can_dispatch_entry(self, symbol: str) -> bool:
+        if self._entry_slots_available() <= 0:
+            return False
+        return not self._pending_entry_symbols
+
+    def _cap_entry_qty(
+        self,
+        symbol: str,
+        qty: float,
+        reference_price: Optional[float],
+    ) -> Optional[float]:
+        if not reference_price or reference_price <= 0:
+            return None
+        desired_usdt = self.position_size_input.value()
+        max_qty = desired_usdt / reference_price
+        capped_qty = min(qty, max_qty)
+        return self._normalize_qty(symbol, capped_qty, reference_price)
+
+    def _resolve_follow_limit_price(
+        self,
+        symbol: str,
+        side: str,
+        fallback_price: Optional[float],
+    ) -> Optional[float]:
+        details = self.ticker_detail_map.get(symbol, {})
+        best_bid = details.get("bid_price")
+        best_ask = details.get("ask_price")
+        base_price = best_bid if side == "Buy" else best_ask
+        if not base_price:
+            base_price = fallback_price
+        if not base_price:
+            return None
+        if self.auto_shift_checkbox.isChecked():
+            shift_key = (symbol, side)
+            attempt = self.limit_shift_attempts.get(shift_key, 0) + 1
+            direction = 1 if side == "Buy" else -1
+            shift_pct = self.shift_bps_input.value() / 100
+            base_price = base_price * (1 + (shift_pct * attempt * direction))
+            self.limit_shift_attempts[shift_key] = attempt
+            logging.info(
+                "Follow limit price (%s attempt %s): %.4f",
+                symbol,
+                attempt,
+                base_price,
+            )
+        return base_price
+
+    @staticmethod
+    def _build_candles(
+        series: List[tuple[int, float]],
+        interval_seconds: int,
+    ) -> List[Candle]:
+        if not series:
+            return []
+        candles: List[Candle] = []
+        bucket_start = (series[0][0] // interval_seconds) * interval_seconds
+        open_price = series[0][1]
+        high_price = open_price
+        low_price = open_price
+        close_price = open_price
+        for timestamp, price in series:
+            bucket = (timestamp // interval_seconds) * interval_seconds
+            if bucket != bucket_start:
+                candles.append(
+                    Candle(
+                        open=open_price,
+                        high=high_price,
+                        low=low_price,
+                        close=close_price,
+                        start_ts=bucket_start,
+                    )
+                )
+                bucket_start = bucket
+                open_price = price
+                high_price = price
+                low_price = price
+            high_price = max(high_price, price)
+            low_price = min(low_price, price)
+            close_price = price
+        candles.append(
+            Candle(
+                open=open_price,
+                high=high_price,
+                low=low_price,
+                close=close_price,
+                start_ts=bucket_start,
+            )
+        )
+        return candles
+
+    @staticmethod
+    def _candle_trend(candles: List[Candle]) -> float:
+        if len(candles) < 2:
+            return 0.0
+        first = candles[0].open
+        last = candles[-1].close
+        if first == 0:
+            return 0.0
+        return (last - first) / first
+
+    @staticmethod
+    def _candle_extreme(candles: List[Candle], last_price: float) -> float:
+        if not candles or last_price <= 0:
+            return 0.0
+        high_price = max(candle.high for candle in candles)
+        low_price = min(candle.low for candle in candles)
+        span = high_price - low_price
+        if span <= 0:
+            return 0.0
+        range_mid = (high_price + low_price) / 2
+        range_pos = (last_price - range_mid) / (span / 2)
+        return min(abs(range_pos), 1.0)
+
+    @staticmethod
+    def _detect_short_reversal(candles: List[Candle]) -> bool:
+        if len(candles) < 3:
+            return False
+        last = candles[-1]
+        prev = candles[-2]
+        prev2 = candles[-3]
+        last_range = last.high - last.low
+        if last_range <= 0:
+            return False
+        upper_wick = last.high - max(last.open, last.close)
+        wick_ratio = upper_wick / last_range
+        bearish_close = last.close < last.open
+        mid_reject = last.close < (last.high + last.low) / 2
+        prev_impulse = (prev.close > prev.open) and ((prev.high - prev.low) > last_range * 0.7)
+        recent_peak = last.high >= max(c.high for c in candles[-6:])
+        lower_high = last.high <= max(prev.high, prev2.high)
+        return bool(
+            bearish_close
+            and mid_reject
+            and prev_impulse
+            and recent_peak
+            and lower_high
+            and wick_ratio >= 0.45
+        )
+
     def _place_order(
         self,
         symbol: str,
@@ -2710,6 +3065,7 @@ class TradingApp(QtWidgets.QMainWindow):
         sl_price: Optional[float] = None,
         set_trading_stop: bool = False,
         force_market: bool = False,
+        entry_signal: Optional[EntrySignal] = None,
     ) -> None:
         if not self.auto_trading_toggle.isChecked():
             logging.warning("Order blocked (auto-trading disabled): %s %s %.6f", side, symbol, qty)
@@ -2748,6 +3104,19 @@ class TradingApp(QtWidgets.QMainWindow):
             else:
                 logging.error("Order rejected locally: %s %s %.6f (below min qty)", side, symbol, qty)
             return
+        if not reduce_only:
+            capped_qty = self._cap_entry_qty(symbol, normalized_qty, reference_price)
+            if capped_qty is None:
+                logging.error("Entry size invalid for %s; missing price or below min qty.", symbol)
+                return
+            if capped_qty < normalized_qty:
+                logging.info(
+                    "Capping entry qty for %s from %.6f to %.6f to respect position size.",
+                    symbol,
+                    normalized_qty,
+                    capped_qty,
+                )
+            normalized_qty = capped_qty
         position_idx = (
             position_idx_override
             if position_idx_override is not None
@@ -2755,26 +3124,17 @@ class TradingApp(QtWidgets.QMainWindow):
         )
         order_type = "Market" if force_market else self.order_type_input.currentText()
         limit_price = None
+        time_in_force = "GTC"
         if order_type == "Limit" and not force_market:
-            limit_price = self.limit_price_input.value()
-            if limit_price <= 0 and price is not None:
-                limit_price = price
+            time_in_force = "PostOnly"
+            fallback_price = price
+            if not fallback_price:
+                manual_price = self.limit_price_input.value()
+                fallback_price = manual_price if manual_price > 0 else None
+            limit_price = self._resolve_follow_limit_price(symbol, side, fallback_price)
             if limit_price is None or limit_price <= 0:
-                logging.error("Limit price must be greater than 0.")
+                logging.error("Limit follow price unavailable for %s %s.", side, symbol)
                 return
-            if self.auto_shift_checkbox.isChecked():
-                shift_key = (symbol, side)
-                attempt = self.limit_shift_attempts.get(shift_key, 0) + 1
-                direction = 1 if side == "Buy" else -1
-                shift_pct = self.shift_bps_input.value() / 100
-                limit_price = limit_price * (1 + (shift_pct * attempt * direction))
-                self.limit_shift_attempts[shift_key] = attempt
-                logging.info(
-                    "Auto-shift limit price (%s attempt %s): %.4f",
-                    symbol,
-                    attempt,
-                    limit_price,
-                )
         if limit_price:
             normalized_qty = self._normalize_qty(symbol, normalized_qty, limit_price)
             if normalized_qty is None:
@@ -2787,7 +3147,14 @@ class TradingApp(QtWidgets.QMainWindow):
             position_idx=position_idx,
             order_type=order_type,
             limit_price=limit_price,
+            time_in_force=time_in_force,
             reduce_only=reduce_only,
+            is_entry=not reduce_only,
+            entry_price=price,
+            entry_reason=entry_signal.reason if entry_signal else "",
+            entry_score=entry_signal.score if entry_signal else 0.0,
+            entry_confidence=entry_signal.confidence if entry_signal else 0.0,
+            entry_predicted_move=entry_signal.predicted_move_pct if entry_signal else 0.0,
             tp_price=tp_price,
             sl_price=sl_price,
             set_trading_stop=set_trading_stop,
@@ -2796,31 +3163,54 @@ class TradingApp(QtWidgets.QMainWindow):
         self._dispatch_order(request)
 
     def _dispatch_order(self, request: OrderRequest) -> None:
-        if not self.client:
+        if not self.client or self._shutting_down:
             return
+        if request.is_entry and self._entry_slots_available() <= 0:
+            self._log_once(
+                f"entry_blocked_slots:{request.symbol}",
+                "Entry blocked: max positions reached (including pending).",
+                level=logging.WARNING,
+            )
+            return
+        if request.is_entry and not self._can_dispatch_entry(request.symbol):
+            self._log_once(
+                f"entry_wait_pending:{request.symbol}",
+                "Entry order waiting for prior entry fill/reject.",
+            )
+            self._pending_entry_queue.append(request)
+            return
+        if request.is_entry:
+            self._pending_entry_symbols.add(request.symbol)
         thread = OrderThread(self.client, request)
         thread.finished.connect(self._on_order_finished)
-        thread.finished.connect(thread.deleteLater)
+        self._register_thread(thread, "OrderThread")
         self.order_threads.append(thread)
         thread.start()
 
     def _queue_trading_stop(self, request: TradingStopRequest) -> None:
-        if not self.client:
+        if not self.client or self._shutting_down:
             return
         thread = TradingStopThread(self.client, request)
         thread.finished.connect(self._on_trading_stop_finished)
-        thread.finished.connect(thread.deleteLater)
+        self._register_thread(thread, "TradingStopThread")
         self.trading_stop_threads.append(thread)
         thread.start()
 
     def _on_order_finished(self, request: OrderRequest, response: Optional[dict], error: object) -> None:
+        if request.is_entry:
+            self._pending_entry_symbols.discard(request.symbol)
+        def finalize_entry() -> None:
+            if request.is_entry:
+                self._dispatch_pending_entries()
         if error:
             logging.error("Order failed: %s", error)
             self._cleanup_order_threads()
+            finalize_entry()
             return
         if response is None:
             logging.error("Order failed: empty response.")
             self._cleanup_order_threads()
+            finalize_entry()
             return
         if self._is_position_mode_error(response) and request.retry == 0:
             fallback_idx = 0 if request.position_idx in (1, 2) else (1 if request.side == "Buy" else 2)
@@ -2828,6 +3218,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 logging.error(
                     "Position mode mismatch persists; no alternate positionIdx available."
                 )
+                finalize_entry()
                 return
             logging.warning("Position mode mismatch; retrying with positionIdx=%s", fallback_idx)
             retry_request = OrderRequest(
@@ -2837,10 +3228,13 @@ class TradingApp(QtWidgets.QMainWindow):
                 position_idx=fallback_idx,
                 order_type=request.order_type,
                 limit_price=request.limit_price,
+                time_in_force=request.time_in_force,
                 reduce_only=request.reduce_only,
+                is_entry=request.is_entry,
                 retry=1,
             )
             self._dispatch_order(retry_request)
+            finalize_entry()
             return
         ret_code = response.get("retCode")
         if ret_code != 0:
@@ -2866,6 +3260,7 @@ class TradingApp(QtWidgets.QMainWindow):
                 request.qty,
                 response,
             )
+            finalize_entry()
             return
         self._cleanup_order_threads()
         logging.info(
@@ -2875,6 +3270,38 @@ class TradingApp(QtWidgets.QMainWindow):
             request.qty,
             response,
         )
+        if request.is_entry and not request.reduce_only:
+            entry_price = request.entry_price or request.limit_price or 0.0
+            direction = "LONG" if request.side == "Buy" else "SHORT"
+            position_qty = request.qty if request.side == "Buy" else -request.qty
+            position_state = PositionState(
+                symbol=request.symbol,
+                qty=position_qty,
+                entry_price=entry_price,
+                tp_price=request.tp_price or 0.0,
+                sl_price=request.sl_price or 0.0,
+                position_idx=request.position_idx,
+            )
+            self.positions[request.symbol] = position_state
+            if entry_price > 0:
+                self._add_history_entry(
+                    request.symbol,
+                    request.side,
+                    "Entry",
+                    abs(request.qty),
+                    entry_price,
+                    notional_usdt=abs(request.qty) * entry_price,
+                    reason=request.entry_reason,
+                )
+            logging.info(
+                "%s entry %s @ %.4f (score %.4f, conf %.4f, pred %.2f%%)",
+                request.symbol,
+                direction,
+                entry_price,
+                request.entry_score,
+                request.entry_confidence,
+                request.entry_predicted_move * 100,
+            )
         if request.set_trading_stop and not request.reduce_only:
             if request.tp_price is not None or request.sl_price is not None:
                 self._queue_trading_stop(
@@ -2903,14 +3330,31 @@ class TradingApp(QtWidgets.QMainWindow):
                     position_idx=request.position_idx,
                     order_type=request.order_type,
                     limit_price=request.limit_price,
+                    time_in_force=request.time_in_force,
                     reduce_only=request.reduce_only,
+                    is_entry=request.is_entry,
                     retry=request.retry + 1,
                     remaining_qty=remaining,
                 )
                 self._dispatch_order(retry_request)
+                finalize_entry()
                 return
         if request.order_type == "Limit":
             self.limit_shift_attempts.pop((request.symbol, request.side), None)
+        finalize_entry()
+
+    def _dispatch_pending_entries(self) -> None:
+        while self._pending_entry_queue and not self._pending_entry_symbols:
+            next_request = self._pending_entry_queue.popleft()
+            if self._shutting_down:
+                self._pending_entry_queue.clear()
+                return
+            if self._entry_slots_available() <= 0:
+                return
+            if self._has_open_position(next_request.symbol):
+                continue
+            self._dispatch_order(next_request)
+            break
 
     def _on_trading_stop_finished(
         self,
@@ -2965,12 +3409,21 @@ class TradingApp(QtWidgets.QMainWindow):
         self._cleanup_trading_stop_threads()
 
     def _cleanup_order_threads(self) -> None:
-        self.order_threads = [thread for thread in self.order_threads if thread.isRunning()]
+        self.order_threads = [
+            thread for thread in self.order_threads if self._safe_thread_is_running(thread)
+        ]
 
     def _cleanup_trading_stop_threads(self) -> None:
         self.trading_stop_threads = [
-            thread for thread in self.trading_stop_threads if thread.isRunning()
+            thread for thread in self.trading_stop_threads if self._safe_thread_is_running(thread)
         ]
+
+    @staticmethod
+    def _safe_thread_is_running(thread: QtCore.QThread) -> bool:
+        try:
+            return thread.isRunning()
+        except RuntimeError:
+            return False
 
     def _is_position_mode_error(self, response: dict) -> bool:
         ret_msg = str(response.get("retMsg", "")).lower()
