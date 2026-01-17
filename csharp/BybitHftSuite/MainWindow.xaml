@@ -47,7 +47,21 @@
       <Setter Property="Padding" Value="12,8" />
       <Setter Property="Margin" Value="0,0,8,8" />
       <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
-      <Setter Property="Foreground" Value="#F9FAFB" />
+      <Setter Property="Foreground" Value="#111827" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style x:Key="SecondaryButton" TargetType="Button">
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="Margin" Value="0,0,8,8" />
+      <Setter Property="Background" Value="#E5E7EB" />
+      <Setter Property="Foreground" Value="#0F172A" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style x:Key="DangerButton" TargetType="Button">
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="Margin" Value="0,0,8,8" />
+      <Setter Property="Background" Value="#FCA5A5" />
+      <Setter Property="Foreground" Value="#7F1D1D" />
       <Setter Property="BorderThickness" Value="0" />
     </Style>
     <Style TargetType="CheckBox">
@@ -92,7 +106,7 @@
             <TextBlock Text="Status" Foreground="{StaticResource MutedTextBrush}" />
             <TextBlock Text="Disconnected" Name="ConnectionStatus" Foreground="#FBBF24" FontSize="14" Margin="0,0,0,12" />
             <Button Content="Connect" Click="OnConnectClick" />
-            <Button Content="Disconnect" Background="#475569" Click="OnDisconnectClick" />
+            <Button Content="Disconnect" Style="{StaticResource SecondaryButton}" Click="OnDisconnectClick" />
           </StackPanel>
         </Border>
 
@@ -101,8 +115,8 @@
             <TextBlock Text="Quick Actions" FontWeight="SemiBold" />
             <TextBlock Text="Manual" Foreground="{StaticResource MutedTextBrush}" />
             <Button Content="Send Buy" Click="OnManualBuyClick" />
-            <Button Content="Send Sell" Background="{StaticResource DangerBrush}" Click="OnManualSellClick" />
-            <Button Content="Flatten" Background="#475569" Click="OnFlattenClick" />
+            <Button Content="Send Sell" Style="{StaticResource DangerButton}" Click="OnManualSellClick" />
+            <Button Content="Flatten" Style="{StaticResource SecondaryButton}" Click="OnFlattenClick" />
           </StackPanel>
         </Border>
       </StackPanel>
@@ -289,8 +303,8 @@
               <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-              <Button Content="Clear" Background="#475569" Click="OnClearLogsClick" />
-              <Button Content="Export" Background="#475569" Click="OnExportLogsClick" />
+              <Button Content="Clear" Style="{StaticResource SecondaryButton}" Click="OnClearLogsClick" />
+              <Button Content="Export" Style="{StaticResource SecondaryButton}" Click="OnExportLogsClick" />
             </StackPanel>
             <TextBox Grid.Row="1" Name="LogOutput" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
                      VerticalScrollBarVisibility="Auto" Background="#0B1220" BorderBrush="{StaticResource BorderBrush}" />
@@ -304,7 +318,7 @@
               <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-              <Button Content="Run Simulation" Click="OnRunBacktestClick" />
+              <Button Content="Run Simulation" Style="{StaticResource SecondaryButton}" Click="OnRunBacktestClick" />
               <TextBlock Text="Fee buffer: 0.08%" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" />
             </StackPanel>
             <Border Grid.Row="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="12" Padding="16">
