@@ -769,6 +769,10 @@ class TradingApp(QtWidgets.QMainWindow):
         self.time_status_timer.stop()
         self.history_timer.stop()
         self.trading_timer.stop()
+        self._stop_thread(self.ticker_thread)
+        self._stop_thread(self.instrument_thread)
+        self._stop_thread(self.portfolio_thread)
+        self._stop_thread(self.history_thread)
         for thread in list(self._active_threads):
             self._stop_thread(thread)
         self.order_threads.clear()
